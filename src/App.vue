@@ -87,7 +87,7 @@
 
         <!-- 聊天区域 -->
         <div class="chat-container">
-          <h3>聊天室</h3>
+          <h3>聊天</h3>
           <div class="chat-messages" ref="chatMessages">
             <div 
               v-for="msg in chatHistory" 
@@ -724,7 +724,6 @@ canvas {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  max-height: 300px;
   margin-bottom: 15px;
   padding-right: 10px;
 }
