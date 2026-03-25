@@ -61,11 +61,27 @@
                 <span v-if="player.role === 'drawer'">🎨</span>
               </span>
               <span class="score">得分: {{ player.score }}</span>
+              <span v-if="!isGameStarted" class="ready-status">
+                <span v-if="player.id === socket?.id" class="ready-toggle">
+                  <button @click="toggleReady" :disabled="isGameStarted">
+                    {{ player.isReady ? '取消准备' : '准备' }}
+                  </button>
+                </span>
+                <span v-else>
+                  {{ player.isReady ? '✅ 已准备' : '⏳ 未准备' }}
+                </span>
+              </span>
             </div>
           </div>
 
-          <div class="game-controls">
-            <button @click="startGame" v-if="players.length >= 2 && !isGameStarted">开始游戏</button>
+          <div class="game-controls" v-if="!isGameStarted">
+            <div v-if="players.length >= 2" class="ready-status-message">
+              <p v-if="!allPlayersReady">等待所有玩家准备... ({{ readyCount }}/{{ players.length }})</p>
+              <p v-else>所有玩家已准备，游戏即将开始...</p>
+            </div>
+            <div v-else>
+              <p>需要至少2名玩家才能开始游戏</p>
+            </div>
           </div>
         </div>
 
@@ -153,6 +169,15 @@ const drawingData = ref({
   clearCount: 0
 })
 
+// 计算属性
+const isDrawer = computed(() => role.value === 'drawer')
+const allPlayersReady = computed(() => {
+  return players.value.length >= 2 && players.value.every(p => p.isReady)
+})
+const readyCount = computed(() => {
+  return players.value.filter(p => p.isReady).length
+})
+
 // 加入房间
 const joinRoom = () => {
   if (!username.value.trim() || !inputRoomId.value.trim()) {
@@ -160,7 +185,6 @@ const joinRoom = () => {
     return
   }
 
-  // 创建 Socket 连接
   socket.value = io('http://localhost:3001')
   
   socket.value.on('connect', () => {
@@ -179,8 +203,6 @@ const joinRoom = () => {
     currentRound.value = data.currentRound || 1
     maxRounds.value = data.maxRounds || 10
     timeLeft.value = data.timeLeft || 90
-    
-    // 重新绘制接收到的画图数据
     redrawCanvas(data.drawingData)
   })
 
@@ -196,6 +218,10 @@ const joinRoom = () => {
     players.value = data.players
   })
 
+  socket.value.on('playerListUpdate', (data) => {
+    players.value = data.players
+  })
+
   socket.value.on('drawingUpdate', (data) => {
     handleDrawingUpdate(data)
   })
@@ -203,11 +229,6 @@ const joinRoom = () => {
   socket.value.on('chatMessage', (msg) => {
     chatHistory.value.push(msg)
     scrollChatToBottom()
-    
-    if (msg.correctGuess) {
-      // 规则5: 答案保护 - 系统提示猜对，不清空题目
-      // 不清空题目，让画师继续画
-    }
   })
 
   socket.value.on('chatError', (data) => {
@@ -238,7 +259,7 @@ const joinRoom = () => {
     currentRound.value = data.currentRound
     timeLeft.value = data.timeLeft
     guessedPlayers.value = []
-    clearCanvas(false) // 不清除远程
+    clearCanvas(false)
     redrawCanvas(data.drawingData)
   })
 
@@ -252,13 +273,9 @@ const joinRoom = () => {
   })
 
   socket.value.on('roundEnded', (data) => {
-    // 显示本轮结果
     const resultMsg = `第${data.currentRound}轮结束！词语是: ${data.word}
     猜对玩家: ${data.guessedPlayers.map(g => g.username).join(', ')}`
-    
     alert(resultMsg)
-    
-    // 更新玩家分数
     players.value = data.players
     guessedPlayers.value = []
   })
@@ -266,13 +283,9 @@ const joinRoom = () => {
   socket.value.on('gameEnded', (data) => {
     isGameStarted.value = false
     isGameFinished.value = true
-    
-    // 显示最终结果
     const winners = data.winners.map(w => w.username).join(', ')
     const scores = data.finalScores.map(s => `${s.username}: ${s.score}分`).join('\n')
-    
     alert(`游戏结束！\n\n获胜者: ${winners}\n\n最终得分:\n${scores}`)
-    
     players.value = data.players
   })
 
@@ -282,13 +295,12 @@ const joinRoom = () => {
   })
 }
 
-// 开始游戏
-const startGame = () => {
-  if (socket.value && players.value.length >= 2) {
-    socket.value.emit('startGame', roomId.value)
+// 切换准备状态
+const toggleReady = () => {
+  if (socket.value && !isGameStarted.value) {
+    socket.value.emit('toggleReady', roomId.value)
   }
 }
-
 
 // 画布初始化
 onMounted(() => {
@@ -302,12 +314,9 @@ onMounted(() => {
 const startDrawing = (e) => {
   if (!isDrawer.value || !isConnected.value) return
   
-  // 获取画布的缩放比例
   const rect = canvas.value.getBoundingClientRect()
   const scaleX = canvas.value.width / rect.width
   const scaleY = canvas.value.height / rect.height
-  
-  // 计算实际画布坐标
   const x = (e.clientX - rect.left) * scaleX
   const y = (e.clientY - rect.top) * scaleY
   
@@ -315,7 +324,6 @@ const startDrawing = (e) => {
   lastX.value = x
   lastY.value = y
   
-  // 发送开始绘制事件
   if (socket.value) {
     socket.value.emit('draw', {
       roomId: roomId.value,
@@ -331,33 +339,25 @@ const startDrawing = (e) => {
 const draw = (e) => {
   if (!isDrawing.value || !isDrawer.value) return
   
-  // 获取画布的缩放比例
   const rect = canvas.value.getBoundingClientRect()
   const scaleX = canvas.value.width / rect.width
   const scaleY = canvas.value.height / rect.height
-  
-  // 计算实际画布坐标
   const x = (e.clientX - rect.left) * scaleX
   const y = (e.clientY - rect.top) * scaleY
   
-  // 确保 lastX 和 lastY 有值
   if (lastX.value === null || lastY.value === null) {
     lastX.value = x
     lastY.value = y
     return
   }
   
-  // 本地绘制
   ctx.value.strokeStyle = selectedColor.value
   ctx.value.lineWidth = 3
-  ctx.value.lineCap = 'round'
-  ctx.value.lineJoin = 'round'
   ctx.value.beginPath()
   ctx.value.moveTo(lastX.value, lastY.value)
   ctx.value.lineTo(x, y)
   ctx.value.stroke()
   
-  // 发送绘制事件
   if (socket.value) {
     socket.value.emit('draw', {
       roomId: roomId.value,
@@ -382,7 +382,6 @@ const stopDrawing = () => {
 // 清空画布
 const clearCanvas = (emitEvent = true) => {
   ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
-  
   if (emitEvent && socket.value && isDrawer.value) {
     socket.value.emit('draw', {
       roomId: roomId.value,
@@ -398,7 +397,6 @@ const selectColor = (color) => {
 
 // 处理远程绘制更新
 const handleDrawingUpdate = (data) => {
-  // 确保画布属性正确设置
   ctx.value.lineWidth = 3
   ctx.value.lineCap = 'round'
   ctx.value.lineJoin = 'round'
@@ -418,8 +416,6 @@ const handleDrawingUpdate = (data) => {
 // 重新绘制画布
 const redrawCanvas = (data) => {
   ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
-  
-  // 确保画布属性正确设置
   ctx.value.lineWidth = 3
   ctx.value.lineCap = 'round'
   ctx.value.lineJoin = 'round'
@@ -429,7 +425,6 @@ const redrawCanvas = (data) => {
       ctx.value.strokeStyle = line.color || '#000000'
       ctx.value.beginPath()
       ctx.value.moveTo(line.points[0].x, line.points[0].y)
-      
       for (let i = 1; i < line.points.length; i++) {
         ctx.value.lineTo(line.points[i].x, line.points[i].y)
       }
@@ -441,13 +436,11 @@ const redrawCanvas = (data) => {
 // 发送聊天消息
 const sendMessage = () => {
   if (!chatMessage.value.trim() || !socket.value) return
-  
   socket.value.emit('chatMessage', {
     roomId: roomId.value,
     message: chatMessage.value,
     username: username.value
   })
-  
   chatMessage.value = ''
 }
 
@@ -467,9 +460,6 @@ watch(chatHistory, scrollChatToBottom, { deep: true })
 // 最后位置记录
 const lastX = ref(null)
 const lastY = ref(null)
-
-// 计算属性
-const isDrawer = computed(() => role.value === 'drawer')
 
 // 清理
 onUnmounted(() => {
@@ -693,34 +683,32 @@ canvas {
   font-weight: bold;
 }
 
-.game-controls {
-  margin-top: 20px;
-  display: flex;
-  gap: 10px;
+.ready-status {
+  margin-left: 10px;
+  font-size: 0.9rem;
 }
-
-.game-controls button {
-  flex: 1;
-  padding: 12px;
-  border: none;
-  border-radius: 8px;
+.ready-toggle button {
   background: #3498db;
   color: white;
-  font-size: 1rem;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 4px;
   cursor: pointer;
-  transition: background 0.3s;
+  font-size: 0.8rem;
+}
+.ready-toggle button:disabled {
+  background: #95a5a6;
+  cursor: not-allowed;
+}
+.ready-status-message {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 0.9rem;
+  color: #2c3e50;
 }
 
-.game-controls button:hover {
-  background: #2980b9;
-}
-
-.game-controls button:last-child {
-  background: #9b59b6;
-}
-
-.game-controls button:last-child:hover {
-  background: #8e44ad;
+.game-controls {
+  margin-top: 20px;
 }
 
 .chat-container {
@@ -901,7 +889,6 @@ canvas {
   }
 }
 
-/* 滚动条样式 */
 ::-webkit-scrollbar {
   width: 8px;
 }
