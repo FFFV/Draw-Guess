@@ -2,17 +2,19 @@
   <div class="game-container">
     <div class="header">
       <h1>🎨 多人你画我猜</h1>
-      <div class="room-info">
-        <span v-if="roomId">房间: {{ roomId }}</span>
-        <span v-else>未加入房间</span>
-        <span class="players-count">在线玩家: {{ players.length }}</span>
-        <div v-if="isGameStarted" class="game-stats">
-          <span class="round-info">第 {{ currentRound }}/{{ maxRounds }} 轮</span>
-          <span class="timer" :class="{ warning: timeLeft <= 10 }">
-            ⏱️ {{ Math.floor(timeLeft / 60) }}:{{ (timeLeft % 60).toString().padStart(2, '0') }}
-          </span>
+        <div class="room-info">
+          <el-tag v-if="roomId" type="info" :disable-transitions="true" size="large" :round="true">房间: {{ roomId }}</el-tag>
+          <el-button v-else type="primary" @click="showJoinDialog = true">
+            加入房间
+          </el-button>
+          <el-tag type="success" :disable-transitions="true" size="large" :round="true">在线玩家: {{ players.length }}</el-tag>
+          <div v-if="isGameStarted" class="game-stats">
+            <el-tag type="warning" :disable-transitions="true" size="large" :round="true">第 {{ currentRound }}/{{ maxRounds }} 轮</el-tag>
+            <el-tag :type="timeLeft <= 10 ? 'danger' : 'primary'" class="timer" :class="{ warning: timeLeft <= 10 }" size="large" :round="true" :disable-transitions="true">
+              ⏱️{{ Math.floor(timeLeft / 60) }}:{{ (timeLeft % 60).toString().padStart(2, '0') }}
+            </el-tag>
+          </div>
         </div>
-      </div>
     </div>
 
     <div class="game-content">
@@ -49,21 +51,18 @@
       <div class="right-panel">
         <!-- 游戏信息卡片 -->
         <el-card class="game-info-card">
-          <template #header>
-            <span>游戏信息</span>
-          </template>
           <div class="role-info">
             <h3>角色: 
               <el-tag v-if="role === 'drawer'" type="danger">🎨 画图者</el-tag>
               <el-tag v-else type="primary">🔍 猜词者</el-tag>
             </h3>
-            <p v-if="isDrawer">你的题目: <span class="word">{{ currentWord }}</span></p>
-            <p v-else>等待画图者画图...</p>
+            <p v-if="isDrawer" style="margin-top: 5px;">你的题目: <span class="word">{{ currentWord }}</span></p>
+            <p v-if="!isDrawer && allPlayersReady">等待画图者画图...</p>
           </div>
           
           <div class="players-list">
             <h3>玩家列表</h3>
-            <el-table :data="players" size="small" style="width: 100%">
+            <el-table :data="players" size="small" style="width: 100%" empty-text="当前房间玩家为空">
               <el-table-column prop="username" label="玩家">
                 <template #default="{ row }">
                   <span :class="{ drawer: row.role === 'drawer' }">
@@ -81,8 +80,8 @@
                     </el-button>
                   </span>
                   <span v-else>
-                    <el-tag v-if="row.isReady" type="success" size="small">✅ 已准备</el-tag>
-                    <el-tag v-else type="info" size="small">⏳ 未准备</el-tag>
+                    <el-tag v-if="row.isReady" type="success" size="small" :disable-transitions="true">✅ 已准备</el-tag>
+                    <el-tag v-else type="info" size="small" :disable-transitions="true">⏳ 未准备</el-tag>
                   </span>
                 </template>
               </el-table-column>
@@ -123,6 +122,8 @@
               placeholder="输入聊天消息或猜词..."
               @keyup.enter="sendMessage"
               :disabled="!isConnected || (isDrawer && isGameStarted && !isGameFinished)"
+              maxlength="100"
+              show-word-limit
             />
             <el-button type="primary" @click="sendMessage" :disabled="!isConnected || (isDrawer && isGameStarted && !isGameFinished)">
               发送
@@ -133,7 +134,7 @@
     </div>
 
     <!-- 加入房间模态框 -->
-    <el-dialog v-model="showJoinDialog" title="加入游戏房间" width="500px" :close-on-click-modal="false">
+    <el-dialog v-model="showJoinDialog" title="加入游戏房间" width="500px" :close-on-click-modal="false" align-center>
       <el-form>
         <el-form-item label="用户名">
           <el-input v-model="username" placeholder="请输入用户名" />
@@ -533,9 +534,9 @@ onUnmounted(() => {
 <style scoped>
 /* 保留原有样式，可根据需要微调 */
 .game-container {
-  max-width: 1400px;
+  max-width: 80vw;
   margin: 0 auto;
-  height: 100vh;
+  height: calc(100vh - 50px);
   display: flex;
   flex-direction: column;
 }
@@ -566,12 +567,6 @@ onUnmounted(() => {
   align-items: center;
 }
 
-.players-count {
-  background: rgba(255, 255, 255, 0.2);
-  padding: 5px 15px;
-  border-radius: 20px;
-}
-
 .game-stats {
   display: flex;
   gap: 20px;
@@ -586,16 +581,7 @@ onUnmounted(() => {
   font-weight: bold;
 }
 
-.timer {
-  background: rgba(46, 204, 113, 0.3);
-  padding: 5px 15px;
-  border-radius: 20px;
-  color: white;
-  font-weight: bold;
-}
-
 .timer.warning {
-  background: rgba(231, 76, 60, 0.3);
   animation: pulse 1s infinite;
 }
 
@@ -609,6 +595,8 @@ onUnmounted(() => {
   display: flex;
   flex: 1;
   gap: 20px;
+  flex-wrap: nowrap;
+  overflow: auto;
   height: calc(100vh - 120px);
 }
 
@@ -673,14 +661,25 @@ canvas {
   transform: scale(1.2);
 }
 
-/* 卡片覆盖样式，使其背景半透 */
-.game-info-card,
-.chat-card {
-  background: rgba(255, 255, 255, 0.9);
+
+.game-info-card {background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(5px);
   border-radius: 15px;
   border: none;
   box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+  overflow-y: auto;
+  max-height: 100%;
+}
+
+.chat-card {background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(5px);
+  border-radius: 15px;
+  border: none;
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* 防止内容溢出影响flex计算 */
 }
 
 .role-info h3 {
@@ -694,7 +693,6 @@ canvas {
   color: white;
   padding: 8px 15px;
   border-radius: 10px;
-  font-size: 1.2rem;
   font-weight: bold;
   margin-left: 10px;
 }
@@ -757,13 +755,16 @@ canvas {
 }
 
 .chat-messages {
-  height: 300px;
+  height: calc(100% - 50px);
   overflow-y: auto;
   margin-bottom: 15px;
   padding-right: 10px;
 }
 
 .chat-message {
+  word-wrap: break-word;
+  word-break: break-all;
+  white-space: normal;
   padding: 8px 12px;
   margin-bottom: 8px;
   background: #f8f9fa;
