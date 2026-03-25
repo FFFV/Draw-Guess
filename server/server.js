@@ -476,6 +476,69 @@ function endGame(roomId) {
   });
 
   console.log(`房间 ${roomId} 游戏结束，获胜者: ${winners.map(w => w.username).join(', ')}`);
+
+  setTimeout(() => {
+    const currentRoom = rooms.get(roomId);
+    if (currentRoom) {
+      resetRoomData(roomId);
+    }
+  }, 1000);
+}
+
+function resetRoomData(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  // 清除计时器
+  if (room.roundTimer) {
+    clearInterval(room.roundTimer);
+    room.roundTimer = null;
+  }
+
+  // 重置游戏核心数据
+  room.state = GAME_STATE.WAITING;
+  room.word = getRandomWord(); // 重置一个随机词（实际游戏开始时会重新生成）
+  room.drawingData = { lines: [], clearCount: 0 };
+  room.currentRound = 0;
+  room.maxRounds = 0;
+  room.guessedPlayers = [];
+  room.drawerHistory = [];
+  room.drawerIndex = 0;
+  room.roundStartTime = null;
+  room.timeLeft = GAME_CONFIG.ROUND_TIME;
+  room.isGameFinished = false;
+
+  // 重置所有玩家数据
+  room.players.forEach(player => {
+    player.score = 0;
+    player.isReady = false;
+    player.role = 'guesser'; // 重置为猜词者
+  });
+
+  // 添加系统消息
+  const resetMsg = {
+    id: Date.now(),
+    username: '系统',
+    message: '游戏已重置，所有玩家分数清零，请重新准备',
+    timestamp: new Date().toLocaleTimeString(),
+    isSystem: true
+  };
+  room.chatHistory.push(resetMsg);
+
+  // 广播重置后的房间状态
+  io.to(roomId).emit('gameReset', {
+    roomId: room.id,
+    players: room.players,
+    currentRound: room.currentRound,
+    maxRounds: room.maxRounds,
+    timeLeft: room.timeLeft,
+    state: room.state,
+    chatHistory: room.chatHistory,
+    drawingData: room.drawingData,
+    config: GAME_CONFIG
+  });
+
+  console.log(`房间 ${roomId} 已被重置`);
 }
 
 const PORT = process.env.PORT || 3001;

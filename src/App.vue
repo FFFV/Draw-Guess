@@ -29,7 +29,9 @@
             @mouseleave="stopDrawing"
           ></canvas>
           <div class="canvas-controls">
-            <button @click="clearCanvas" :disabled="!isDrawer">清空画布</button>
+            <el-button type="danger" @click="clearCanvas" :disabled="!isDrawer">
+              清空画布
+            </el-button>
             <div class="color-picker">
               <div 
                 v-for="color in colors" 
@@ -45,33 +47,46 @@
 
       <!-- 右侧控制区域 -->
       <div class="right-panel">
-        <!-- 游戏信息 -->
-        <div class="game-info">
+        <!-- 游戏信息卡片 -->
+        <el-card class="game-info-card">
+          <template #header>
+            <span>游戏信息</span>
+          </template>
           <div class="role-info">
-            <h3>角色: {{ role === 'drawer' ? '🎨 画图者' : '🔍 猜词者' }}</h3>
+            <h3>角色: 
+              <el-tag v-if="role === 'drawer'" type="danger">🎨 画图者</el-tag>
+              <el-tag v-else type="primary">🔍 猜词者</el-tag>
+            </h3>
             <p v-if="isDrawer">你的题目: <span class="word">{{ currentWord }}</span></p>
             <p v-else>等待画图者画图...</p>
           </div>
           
           <div class="players-list">
             <h3>玩家列表</h3>
-            <div class="player-item" v-for="player in players" :key="player.id">
-              <span :class="{ drawer: player.role === 'drawer' }">
-                {{ player.username }}
-                <span v-if="player.role === 'drawer'">🎨</span>
-              </span>
-              <span class="score">得分: {{ player.score }}</span>
-              <span v-if="!isGameStarted" class="ready-status">
-                <span v-if="player.id === socket?.id" class="ready-toggle">
-                  <button @click="toggleReady" :disabled="isGameStarted">
-                    {{ player.isReady ? '取消准备' : '准备' }}
-                  </button>
-                </span>
-                <span v-else>
-                  {{ player.isReady ? '✅ 已准备' : '⏳ 未准备' }}
-                </span>
-              </span>
-            </div>
+            <el-table :data="players" size="small" style="width: 100%">
+              <el-table-column prop="username" label="玩家">
+                <template #default="{ row }">
+                  <span :class="{ drawer: row.role === 'drawer' }">
+                    {{ row.username }}
+                    <el-tag v-if="row.role === 'drawer'" type="danger" size="small">🎨</el-tag>
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="score" label="得分" sortable />
+              <el-table-column label="状态" v-if="!isGameStarted">
+                <template #default="{ row }">
+                  <span v-if="row.id === socket?.id" class="ready-toggle">
+                    <el-button size="small" @click="toggleReady" :disabled="isGameStarted">
+                      {{ row.isReady ? '取消准备' : '准备' }}
+                    </el-button>
+                  </span>
+                  <span v-else>
+                    <el-tag v-if="row.isReady" type="success" size="small">✅ 已准备</el-tag>
+                    <el-tag v-else type="info" size="small">⏳ 未准备</el-tag>
+                  </span>
+                </template>
+              </el-table-column>
+            </el-table>
           </div>
 
           <div class="game-controls" v-if="!isGameStarted">
@@ -83,11 +98,13 @@
               <p>需要至少2名玩家才能开始游戏</p>
             </div>
           </div>
-        </div>
+        </el-card>
 
-        <!-- 聊天区域 -->
-        <div class="chat-container">
-          <h3>聊天</h3>
+        <!-- 聊天卡片 -->
+        <el-card class="chat-card">
+          <template #header>
+            <span>聊天</span>
+          </template>
           <div class="chat-messages" ref="chatMessages">
             <div 
               v-for="msg in chatHistory" 
@@ -101,40 +118,43 @@
             </div>
           </div>
           <div class="chat-input">
-            <input 
-              v-model="chatMessage" 
+            <el-input
+              v-model="chatMessage"
+              placeholder="输入聊天消息或猜词..."
               @keyup.enter="sendMessage"
-              :placeholder="isDrawer ? '画师不能发送消息' : '输入聊天消息或猜词...'"
               :disabled="!isConnected || (isDrawer && isGameStarted && !isGameFinished)"
             />
-            <button @click="sendMessage" :disabled="!isConnected || (isDrawer && isGameStarted && !isGameFinished)">发送</button>
+            <el-button type="primary" @click="sendMessage" :disabled="!isConnected || (isDrawer && isGameStarted && !isGameFinished)">
+              发送
+            </el-button>
           </div>
-        </div>
+        </el-card>
       </div>
     </div>
 
     <!-- 加入房间模态框 -->
-    <div class="modal" v-if="!isConnected">
-      <div class="modal-content">
-        <h2>加入游戏房间</h2>
-        <div class="form-group">
-          <label>用户名:</label>
-          <input v-model="username" placeholder="请输入用户名" />
-        </div>
-        <div class="form-group">
-          <label>房间号:</label>
-          <input v-model="inputRoomId" placeholder="请输入房间号" />
-        </div>
-        <button @click="joinRoom" class="join-btn">加入房间</button>
-        <p class="hint">提示: 和朋友们输入相同的房间号即可一起玩！</p>
-      </div>
-    </div>
+    <el-dialog v-model="showJoinDialog" title="加入游戏房间" width="500px" :close-on-click-modal="false">
+      <el-form>
+        <el-form-item label="用户名">
+          <el-input v-model="username" placeholder="请输入用户名" />
+        </el-form-item>
+        <el-form-item label="房间号">
+          <el-input v-model="inputRoomId" placeholder="请输入房间号" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showJoinDialog = false">取消</el-button>
+        <el-button type="primary" @click="joinRoom">加入房间</el-button>
+      </template>
+      <p class="hint">提示: 和朋友们输入相同的房间号即可一起玩！</p>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import io from 'socket.io-client'
+import { ElMessage } from 'element-plus'
 
 // Socket.io 连接
 const socket = ref(null)
@@ -142,6 +162,7 @@ const isConnected = ref(false)
 const roomId = ref('')
 const username = ref(`玩家${Math.floor(Math.random() * 1000)}`)
 const inputRoomId = ref('room1')
+const showJoinDialog = ref(true) // 控制弹窗显示
 
 // 游戏状态
 const players = ref([])
@@ -181,7 +202,7 @@ const readyCount = computed(() => {
 // 加入房间
 const joinRoom = () => {
   if (!username.value.trim() || !inputRoomId.value.trim()) {
-    alert('请输入用户名和房间号')
+    ElMessage.error('请输入用户名和房间号')
     return
   }
 
@@ -189,11 +210,12 @@ const joinRoom = () => {
   
   socket.value.on('connect', () => {
     isConnected.value = true
+    showJoinDialog.value = false
     socket.value.emit('joinRoom', inputRoomId.value, username.value)
     roomId.value = inputRoomId.value
   })
 
-  // 监听服务器事件
+  // 监听服务器事件（与之前相同，略）
   socket.value.on('roomInfo', (data) => {
     players.value = data.players
     role.value = data.players.find(p => p.id === socket.value.id)?.role || ''
@@ -207,7 +229,7 @@ const joinRoom = () => {
   })
 
   socket.value.on('roomFull', (data) => {
-    alert(`房间已满，最多支持${data.maxPlayers}人同时游戏`)
+    ElMessage.error(`房间已满，最多支持${data.maxPlayers}人同时游戏`)
   })
 
   socket.value.on('playerJoined', (data) => {
@@ -232,11 +254,11 @@ const joinRoom = () => {
   })
 
   socket.value.on('chatError', (data) => {
-    alert(data.message)
+    ElMessage.error(data.message)
   })
 
   socket.value.on('gameError', (data) => {
-    alert(data.message)
+    ElMessage.error(data.message)
   })
 
   socket.value.on('gameStarted', (data) => {
@@ -273,9 +295,14 @@ const joinRoom = () => {
   })
 
   socket.value.on('roundEnded', (data) => {
-    const resultMsg = `第${data.currentRound}轮结束！词语是: ${data.word}
-    猜对玩家: ${data.guessedPlayers.map(g => g.username).join(', ')}`
-    alert(resultMsg)
+    const guessedNames = data.guessedPlayers.map(g => g.username).join(', ')
+    const message = `第${data.currentRound}轮结束！词语是: ${data.word}<br/>猜对玩家: ${guessedNames || '无'}`
+    ElMessage({
+      message,
+      dangerouslyUseHTMLString: true,
+      type: 'info',
+      duration: 5000
+    })
     players.value = data.players
     guessedPlayers.value = []
   })
@@ -284,15 +311,49 @@ const joinRoom = () => {
     isGameStarted.value = false
     isGameFinished.value = true
     const winners = data.winners.map(w => w.username).join(', ')
-    const scores = data.finalScores.map(s => `${s.username}: ${s.score}分`).join('\n')
-    alert(`游戏结束！\n\n获胜者: ${winners}\n\n最终得分:\n${scores}`)
+    const scores = data.finalScores.map(s => `${s.username}: ${s.score}分`).join('<br/>')
+    const message = `游戏结束！<br/><br/>获胜者: ${winners}<br/><br/>最终得分:<br/>${scores}`
+    ElMessage({
+      message,
+      dangerouslyUseHTMLString: true,
+      type: 'success',
+      duration: 0,
+      showClose: true
+    })
     players.value = data.players
   })
 
   socket.value.on('disconnect', () => {
     isConnected.value = false
     roomId.value = ''
+    showJoinDialog.value = true
   })
+
+  socket.value.on('gameReset', (data) => {
+  // 更新房间数据
+  players.value = data.players;
+  roomId.value = data.roomId;
+  currentRound.value = data.currentRound;
+  maxRounds.value = data.maxRounds;
+  timeLeft.value = data.timeLeft;
+  chatHistory.value = data.chatHistory;
+  drawingData.value = data.drawingData;
+  
+  // 重置游戏状态
+  isGameStarted.value = false;
+  isGameFinished.value = false;
+  role.value = '';          // 重置角色
+  currentWord.value = '';   // 清空当前词语
+  guessedPlayers.value = [];
+  
+  // 重置画布并重绘
+  clearCanvas(false);
+  redrawCanvas(data.drawingData);
+  
+  // 滚动聊天到底部
+  scrollChatToBottom();
+  
+  });
 }
 
 // 切换准备状态
@@ -470,6 +531,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* 保留原有样式，可根据需要微调 */
 .game-container {
   max-width: 1400px;
   margin: 0 auto;
@@ -588,26 +650,6 @@ canvas {
   align-items: center;
 }
 
-.canvas-controls button {
-  background: #e74c3c;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 1rem;
-  transition: background 0.3s;
-}
-
-.canvas-controls button:hover:not(:disabled) {
-  background: #c0392b;
-}
-
-.canvas-controls button:disabled {
-  background: #7f8c8d;
-  cursor: not-allowed;
-}
-
 .color-picker {
   display: flex;
   gap: 10px;
@@ -631,10 +673,13 @@ canvas {
   transform: scale(1.2);
 }
 
-.game-info {
+/* 卡片覆盖样式，使其背景半透 */
+.game-info-card,
+.chat-card {
   background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(5px);
   border-radius: 15px;
-  padding: 20px;
+  border: none;
   box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
 }
 
@@ -711,18 +756,8 @@ canvas {
   margin-top: 20px;
 }
 
-.chat-container {
-  flex: 1;
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 15px;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
-}
-
 .chat-messages {
-  flex: 1;
+  height: 300px;
   overflow-y: auto;
   margin-bottom: 15px;
   padding-right: 10px;
@@ -771,103 +806,6 @@ canvas {
 .chat-input {
   display: flex;
   gap: 10px;
-}
-
-.chat-input input {
-  flex: 1;
-  padding: 12px;
-  border: 2px solid #ddd;
-  border-radius: 8px;
-  font-size: 1rem;
-}
-
-.chat-input button {
-  padding: 12px 24px;
-  background: #27ae60;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.3s;
-}
-
-.chat-input button:hover:not(:disabled) {
-  background: #219955;
-}
-
-.chat-input button:disabled {
-  background: #95a5a6;
-  cursor: not-allowed;
-}
-
-.modal {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.8);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 1000;
-}
-
-.modal-content {
-  background: white;
-  padding: 40px;
-  border-radius: 20px;
-  width: 90%;
-  max-width: 500px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-}
-
-.modal-content h2 {
-  color: #2c3e50;
-  margin-bottom: 30px;
-  text-align: center;
-}
-
-.form-group {
-  margin-bottom: 20px;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 8px;
-  color: #34495e;
-  font-weight: bold;
-}
-
-.form-group input {
-  width: 100%;
-  padding: 12px;
-  border: 2px solid #ddd;
-  border-radius: 8px;
-  font-size: 1rem;
-  transition: border-color 0.3s;
-}
-
-.form-group input:focus {
-  border-color: #3498db;
-  outline: none;
-}
-
-.join-btn {
-  width: 100%;
-  padding: 15px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border: none;
-  border-radius: 10px;
-  font-size: 1.2rem;
-  font-weight: bold;
-  cursor: pointer;
-  transition: transform 0.2s;
-}
-
-.join-btn:hover {
-  transform: translateY(-2px);
 }
 
 .hint {
