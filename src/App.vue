@@ -1,12 +1,22 @@
 <template>
   <div class="game-container">
     <div class="header">
-      <h1>🎨 多人你画我猜</h1>
+      <h1>🎨 你画我猜</h1>
         <div class="room-info">
           <div v-if="roomId" class="room-badge">
-            <el-tag type="info" size="large" round>房间: {{ roomId }}</el-tag>
-            <el-button type="text" @click="copyRoomId" class="copy-room-btn" title="复制房间号">
-              📋
+            <el-tag type="info" size="large" round>
+              <span>房间: {{ roomId }}</span>
+              <el-icon @click="copyRoomId" title="复制房间号" size="10"><DocumentCopy /></el-icon>
+            </el-tag>
+            <!-- 房主锁定按钮 -->
+            <el-button 
+              v-if="isRoomOwner" 
+              :type="isRoomLocked ? 'danger' : 'success'" 
+              size="small" 
+              @click="toggleRoomLock"
+              :disabled="isGameStarted"
+            >
+              {{ isRoomLocked ? '🔓 解锁房间' : '🔒 锁定房间' }}
             </el-button>
           </div>
           <el-button v-else type="primary" @click="showJoinDialog = true">
@@ -107,6 +117,7 @@
                   <span :class="{ drawer: row.role === 'drawer' }">
                     {{ row.username }}
                     <el-tag v-if="row.role === 'drawer'" type="danger" size="small">🎨</el-tag>
+                    <el-tag v-if="row.id === roomOwnerId" type="warning" size="small" style="margin-left: 5px">👑房主</el-tag>
                   </span>
                 </template>
               </el-table-column>
@@ -119,9 +130,22 @@
                     </el-button>
                   </span>
                   <span v-else>
-                    <el-tag v-if="row.isReady" type="success" size="small" :disable-transitions="true">✅ 已准备</el-tag>
-                    <el-tag v-else type="info" size="small" :disable-transitions="true">⏳ 未准备</el-tag>
+                    <el-tag v-if="row.isReady" type="success" size="small">✅ 已准备</el-tag>
+                    <el-tag v-else type="info" size="small">⏳ 未准备</el-tag>
                   </span>
+                </template>
+              </el-table-column>
+              <!-- 房主管理列 -->
+              <el-table-column label="管理" v-if="isRoomOwner && !isGameStarted">
+                <template #default="{ row }">
+                  <el-button 
+                    v-if="row.id !== socket?.id" 
+                    size="small" 
+                    type="danger" 
+                    @click="kickPlayer(row.id, row.username)"
+                  >
+                    踢出
+                  </el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -198,6 +222,7 @@
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import io from 'socket.io-client'
 import { ElMessage } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
 
 // Socket.io 连接
 const socket = ref(null)
@@ -220,6 +245,9 @@ const maxRounds = ref(10)
 const timeLeft = ref(90)
 const guessedPlayers = ref([])
 const isGameFinished = ref(false)
+const isRoomOwner = ref(false)
+const isRoomLocked = ref(false)
+const roomOwnerId = ref('')
 
 // 画布相关
 const canvas = ref(null)
@@ -290,8 +318,10 @@ const joinRoom = () => {
 
   // 监听服务器事件
   socket.value.on('roomInfo', (data) => {
-     showJoinDialog.value = false
+    showJoinDialog.value = false
     players.value = data.players
+    isRoomOwner.value = (socket.value.id === data.ownerId)
+    isRoomLocked.value = data.isLocked
     role.value = data.players.find(p => p.id === socket.value.id)?.role || ''
     currentWord.value = data.word || ''
     chatHistory.value = data.chatHistory
@@ -299,9 +329,40 @@ const joinRoom = () => {
     currentRound.value = data.currentRound || 1
     maxRounds.value = data.maxRounds || 10
     timeLeft.value = data.timeLeft || 90
+    roomOwnerId.value = data.ownerId
     redrawCanvas(data.drawingData)
     // 重置撤销重做状态（由后端历史状态控制）
     updateUndoRedoStatus(data)
+  })
+
+  // 监听房间锁定状态变化
+  socket.value.on('roomLocked', (data) => {
+    isRoomLocked.value = data.isLocked
+    ElMessage.info(data.isLocked ? '房间已锁定，新玩家无法加入' : '房间已解锁')
+  })
+
+  // 监听房间状态更新（玩家列表、房主等）
+  socket.value.on('roomStateUpdate', (data) => {
+    players.value = data.players
+    isRoomOwner.value = (socket.value.id === data.ownerId)
+    isRoomLocked.value = data.isLocked
+    roomOwnerId.value = data.ownerId
+  })
+
+  // 监听被踢出
+  socket.value.on('kicked', (data) => {
+    ElMessage.error(data.message)
+    if (socket.value) {
+      socket.value.disconnect()
+      socket.value = null
+    }
+    isConnected.value = false
+    roomId.value = ''
+    showJoinDialog.value = true
+    players.value = []
+    chatHistory.value = []
+    isGameStarted.value = false
+    roomOwnerId.value = data.ownerId
   })
 
   socket.value.on('roomFull', (data) => {
@@ -315,10 +376,12 @@ const joinRoom = () => {
 
   socket.value.on('playerJoined', (data) => {
     players.value = data.players
+    roomOwnerId.value = data.ownerId
   })
 
   socket.value.on('playerLeft', (data) => {
     players.value = data.players
+    roomOwnerId.value = data.ownerId
   })
 
   socket.value.on('playerListUpdate', (data) => {
@@ -355,6 +418,8 @@ const joinRoom = () => {
     maxRounds.value = data.maxRounds
     timeLeft.value = data.timeLeft
     guessedPlayers.value = []
+    isRoomOwner.value = (socket.value.id === data.ownerId)
+    isRoomLocked.value = data.isLocked
     updateUndoRedoStatus(data)
   })
 
@@ -366,6 +431,7 @@ const joinRoom = () => {
     currentRound.value = data.currentRound
     timeLeft.value = data.timeLeft
     guessedPlayers.value = []
+    roomOwnerId.value = data.ownerId
     clearCanvas(false)
     redrawCanvas(data.drawingData)
     updateUndoRedoStatus(data)
@@ -429,7 +495,8 @@ const joinRoom = () => {
     role.value = '';
     currentWord.value = '';
     guessedPlayers.value = [];
-    
+    roomOwnerId.value = data.ownerId
+
     clearCanvas(false);
     redrawCanvas(data.drawingData);
     scrollChatToBottom();
@@ -623,6 +690,30 @@ const sendMessage = () => {
   chatMessage.value = ''
 }
 
+// 房主锁定/解锁房间
+const toggleRoomLock = () => {
+  if (!isRoomOwner.value) return
+  socket.value.emit('lockRoom', {
+    roomId: roomId.value,
+    lock: !isRoomLocked.value
+  })
+}
+
+// 房主踢出玩家
+const kickPlayer = (targetPlayerId, targetUsername) => {
+  if (!isRoomOwner.value) return
+  ElMessageBox.confirm(`确定要踢出玩家 ${targetUsername} 吗？`, '确认踢出', {
+    confirmButtonText: '确认',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(() => {
+    socket.value.emit('kickPlayer', {
+      roomId: roomId.value,
+      targetPlayerId: targetPlayerId
+    })
+  }).catch(() => {})
+}
+
 // 滚动聊天到底部
 const scrollChatToBottom = () => {
   nextTick(() => {
@@ -654,15 +745,6 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.copy-room-btn {
-  font-size: 18px;
-  padding: 0 4px;
-  cursor: pointer;
-  transition: transform 0.2s;
-}
-.copy-room-btn:hover {
-  transform: scale(1.1);
 }
 
 .canvas-controls {

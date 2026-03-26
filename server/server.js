@@ -30,7 +30,7 @@ const GAME_CONFIG = {
   ROUND_TIME: 90,
   DRAWER_SCORE: 3,
   GUESSER_SCORES: [10, 8, 6, 4, 2],
-  MAX_HISTORY: 30  // 最大历史记录数
+  MAX_HISTORY: 30
 };
 
 // 游戏房间数据
@@ -45,6 +45,8 @@ function createRoom(roomId, password = null) {
     id: roomId,
     password: password,
     players: [],
+    ownerId: null,           // 房主socket.id
+    isLocked: false,         // 房间是否锁定
     drawerIndex: 0,
     word: getRandomWord(),
     state: GAME_STATE.WAITING,
@@ -58,12 +60,10 @@ function createRoom(roomId, password = null) {
     guessedPlayers: [],
     isGameFinished: false,
     drawerHistory: [],
-    // 撤销/重做历史栈
-    historyStates: [],   // 存储绘画状态快照
+    historyStates: [],
     historyIndex: -1,
   };
   rooms.set(roomId, room);
-  // 初始化历史状态
   saveHistoryState(room);
   return room;
 }
@@ -71,10 +71,8 @@ function createRoom(roomId, password = null) {
 function getOrCreateRoom(roomId, password) {
   let room = rooms.get(roomId);
   if (!room) {
-    // 房间不存在，创建并设置密码（如果有传入）
     room = createRoom(roomId, password || null);
   } else {
-    // 房间已存在，验证密码（如果房间有密码且传入密码不匹配）
     if (room.password && room.password !== password) {
       return { error: '密码错误' };
     }
@@ -82,10 +80,9 @@ function getOrCreateRoom(roomId, password) {
   return { room };
 }
 
-// 保存当前绘画状态到历史（用于撤销/重做）
+// 保存当前绘画状态到历史
 function saveHistoryState(room) {
   const snapshot = JSON.parse(JSON.stringify(room.drawingData));
-  // 如果当前索引不是最后一个，则删除之后的记录
   if (room.historyIndex < room.historyStates.length - 1) {
     room.historyStates = room.historyStates.slice(0, room.historyIndex + 1);
   }
@@ -97,7 +94,6 @@ function saveHistoryState(room) {
   }
 }
 
-// 撤销：恢复到上一个状态
 function undoDrawing(room) {
   if (room.historyIndex > 0) {
     room.historyIndex--;
@@ -107,7 +103,6 @@ function undoDrawing(room) {
   return false;
 }
 
-// 重做：恢复到下一个状态
 function redoDrawing(room) {
   if (room.historyIndex < room.historyStates.length - 1) {
     room.historyIndex++;
@@ -126,6 +121,88 @@ function broadcastCanvasFull(roomId) {
     canUndo: room.historyIndex > 0,
     canRedo: room.historyIndex < room.historyStates.length - 1
   });
+}
+
+// 广播房间状态（玩家列表、房主、锁定状态等）
+function broadcastRoomState(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  io.to(roomId).emit('roomStateUpdate', {
+    players: room.players,
+    ownerId: room.ownerId,
+    isLocked: room.isLocked
+  });
+}
+
+// 统一的玩家离开处理
+function handlePlayerLeave(room, playerId, isKick = false) {
+  const playerIndex = room.players.findIndex(p => p.id === playerId);
+  if (playerIndex === -1) return null;
+  
+  const player = room.players[playerIndex];
+  const wasDrawer = (player.role === 'drawer');
+  const hadBeenDrawer = room.drawerHistory.includes(player.id);
+  
+  // 移除玩家
+  room.players.splice(playerIndex, 1);
+  
+  // 处理房主转移
+  if (player.id === room.ownerId && room.players.length > 0) {
+    room.ownerId = room.players[0].id;
+  }
+  
+  // 如果没有玩家了，删除房间
+  if (room.players.length === 0) {
+    if (room.roundTimer) clearInterval(room.roundTimer);
+    rooms.delete(room.id);
+    return player;
+  }
+  
+  // 等待阶段直接更新列表
+  if (room.state === GAME_STATE.WAITING) {
+    broadcastRoomState(room.id);
+    checkAllReady(room.id);
+    return player;
+  }
+  
+  // 游戏进行中的处理
+  if (!hadBeenDrawer && room.currentRound <= room.maxRounds) {
+    room.maxRounds--;
+  }
+  
+  if (wasDrawer) {
+    // 画师离开，结束当前回合
+    if (room.roundTimer) clearInterval(room.roundTimer);
+    room.state = GAME_STATE.FINISHED;
+    io.to(room.id).emit('roundEnded', {
+      word: room.word,
+      guessedPlayers: room.guessedPlayers,
+      drawer: player,
+      players: room.players,
+      currentRound: room.currentRound,
+      maxRounds: room.maxRounds
+    });
+    if (room.currentRound >= room.maxRounds) {
+      endGame(room.id);
+    } else {
+      setTimeout(() => {
+        startNewRound(room.id);
+      }, 3000);
+    }
+  } else {
+    // 猜词者离开，调整画师索引
+    if (playerIndex < room.drawerIndex) {
+      room.drawerIndex--;
+    }
+    // 重新分配角色
+    room.players.forEach((p, idx) => {
+      p.role = idx === room.drawerIndex ? 'drawer' : 'guesser';
+    });
+    broadcastRoomState(room.id);
+    io.to(room.id).emit('roleUpdate', { players: room.players });
+  }
+  
+  return player;
 }
 
 function getNextDrawerIndex(room) {
@@ -173,7 +250,6 @@ function startGameLogic(roomId) {
   room.roundStartTime = Date.now();
   room.timeLeft = GAME_CONFIG.ROUND_TIME;
   
-  // 重置绘画数据与历史
   room.drawingData = { lines: [], clearCount: 0 };
   room.historyStates = [];
   room.historyIndex = -1;
@@ -190,7 +266,9 @@ function startGameLogic(roomId) {
     currentRound: room.currentRound,
     maxRounds: room.maxRounds,
     timeLeft: room.timeLeft,
-    players: room.players
+    players: room.players,
+    ownerId: room.ownerId,
+    isLocked: room.isLocked
   });
   
   broadcastCanvasFull(roomId);
@@ -201,11 +279,18 @@ io.on('connection', (socket) => {
   console.log('新用户连接:', socket.id);
 
   socket.on('joinRoom', (roomId, username, password) => {
-    const {error,room} = getOrCreateRoom(roomId, password);
+    const { error, room } = getOrCreateRoom(roomId, password);
     if (error) {
       socket.emit('joinError', { message: error });
       return;
     }
+    
+    // 检查房间是否锁定
+    if (room.isLocked && room.players.length > 0) {
+      socket.emit('joinError', { message: '房间已锁定，无法加入' });
+      return;
+    }
+    
     if (room.players.length >= GAME_CONFIG.MAX_PLAYERS) {
       socket.emit('roomFull', { maxPlayers: GAME_CONFIG.MAX_PLAYERS });
       return;
@@ -220,11 +305,19 @@ io.on('connection', (socket) => {
     };
     
     room.players.push(player);
+    
+    // 设置房主（第一个玩家成为房主）
+    if (!room.ownerId) {
+      room.ownerId = socket.id;
+    }
+    
     socket.join(roomId);
     
     socket.emit('roomInfo', {
       roomId,
       players: room.players,
+      ownerId: room.ownerId,
+      isLocked: room.isLocked,
       currentRound: room.currentRound,
       maxRounds: room.maxRounds,
       timeLeft: room.timeLeft,
@@ -236,7 +329,9 @@ io.on('connection', (socket) => {
 
     socket.to(roomId).emit('playerJoined', {
       player,
-      players: room.players
+      players: room.players,
+      ownerId: room.ownerId,
+      isLocked: room.isLocked
     });
 
     console.log(`${player.username} 加入了房间 ${roomId}`);
@@ -252,21 +347,59 @@ io.on('connection', (socket) => {
       return;
     }
     player.isReady = !player.isReady;
-    io.to(roomId).emit('playerListUpdate', { players: room.players });
+    broadcastRoomState(roomId);
     checkAllReady(roomId);
   });
 
-  // 绘图事件（增量更新，同时保存状态）
+  // 房主锁定/解锁房间
+  socket.on('lockRoom', ({ roomId, lock }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    if (room.ownerId !== socket.id) {
+      socket.emit('gameError', { message: '只有房主可以锁定房间' });
+      return;
+    }
+    room.isLocked = lock;
+    io.to(roomId).emit('roomLocked', { isLocked: room.isLocked });
+    broadcastRoomState(roomId);
+  });
+
+  // 房主踢出玩家
+  socket.on('kickPlayer', ({ roomId, targetPlayerId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    if (room.ownerId !== socket.id) {
+      socket.emit('gameError', { message: '只有房主可以踢出玩家' });
+      return;
+    }
+    if (targetPlayerId === socket.id) {
+      socket.emit('gameError', { message: '不能踢出自己' });
+      return;
+    }
+    const targetPlayer = room.players.find(p => p.id === targetPlayerId);
+    if (!targetPlayer) return;
+    
+    // 获取被踢玩家的socket并发送踢出通知
+    const targetSocket = io.sockets.sockets.get(targetPlayerId);
+    if (targetSocket) {
+      targetSocket.emit('kicked', { message: `你被房主 ${room.players.find(p => p.id === room.ownerId)?.username} 踢出了房间` });
+      targetSocket.disconnect(true);
+    }
+    
+    // 处理玩家离开
+    handlePlayerLeave(room, targetPlayerId, true);
+    broadcastRoomState(roomId);
+  });
+
+  // 绘图事件
   socket.on('draw', (data) => {
     const { roomId, x, y, type, color, lineWidth } = data;
     const room = rooms.get(roomId);
     if (!room) return;
-    // 只有画图者可以绘图
     const drawerPlayer = room.players[room.drawerIndex];
     if (!drawerPlayer || drawerPlayer.id !== socket.id) return;
     
     if (type === 'start') {
-      // 开始新线条
       room.drawingData.lines.push({ 
         points: [{ x, y }], 
         color: color || '#000000',
@@ -278,11 +411,9 @@ io.on('connection', (socket) => {
         currentLine.points.push({ x, y });
       }
     }
-    // 广播全量更新给所有客户端（包括自己，保证同步）
     broadcastCanvasFull(roomId);
   });
   
-  // 笔画结束，保存历史状态
   socket.on('drawEnd', ({ roomId }) => {
     const room = rooms.get(roomId);
     if (!room) return;
@@ -292,20 +423,17 @@ io.on('connection', (socket) => {
     broadcastCanvasFull(roomId);
   });
   
-  // 清空画布
   socket.on('drawClear', ({ roomId }) => {
     const room = rooms.get(roomId);
     if (!room) return;
     const drawerPlayer = room.players[room.drawerIndex];
     if (!drawerPlayer || drawerPlayer.id !== socket.id) return;
-    // 保存当前状态到历史
     saveHistoryState(room);
     room.drawingData = { lines: [], clearCount: room.drawingData.clearCount + 1 };
-    saveHistoryState(room); // 清空后再保存一次
+    saveHistoryState(room);
     broadcastCanvasFull(roomId);
   });
   
-  // 撤销
   socket.on('undo', ({ roomId }) => {
     const room = rooms.get(roomId);
     if (!room) return;
@@ -316,7 +444,6 @@ io.on('connection', (socket) => {
     }
   });
   
-  // 重做
   socket.on('redo', ({ roomId }) => {
     const room = rooms.get(roomId);
     if (!room) return;
@@ -382,68 +509,10 @@ io.on('connection', (socket) => {
     console.log('用户断开连接:', socket.id);
     
     rooms.forEach((room, roomId) => {
-      const playerIndex = room.players.findIndex(p => p.id === socket.id);
-      if (playerIndex !== -1) {
-        const player = room.players[playerIndex];
-        const wasDrawer = (player.role === 'drawer');
-        const hadBeenDrawer = room.drawerHistory.includes(player.id);
-        
-        room.players.splice(playerIndex, 1);
-        
-        if (room.players.length === 0) {
-          if (room.roundTimer) clearInterval(room.roundTimer);
-          rooms.delete(roomId);
-          return;
-        }
-        
-        if (room.state === GAME_STATE.WAITING) {
-          io.to(roomId).emit('playerLeft', {
-            playerId: socket.id,
-            players: room.players
-          });
-          checkAllReady(roomId);
-          return;
-        }
-        
-        if (!hadBeenDrawer && room.currentRound <= room.maxRounds) {
-          room.maxRounds--;
-        }
-        
-        if (room.players.length > 0) {
-          if (wasDrawer) {
-            if (room.roundTimer) clearInterval(room.roundTimer);
-            room.state = GAME_STATE.FINISHED;
-            io.to(roomId).emit('roundEnded', {
-              word: room.word,
-              guessedPlayers: room.guessedPlayers,
-              drawer: player,
-              players: room.players,
-              currentRound: room.currentRound,
-              maxRounds: room.maxRounds
-            });
-            if (room.currentRound >= room.maxRounds) {
-              endGame(roomId);
-              return;
-            }
-            setTimeout(() => {
-              startNewRound(roomId);
-            }, 3000);
-          } else {
-            if (playerIndex < room.drawerIndex) {
-              room.drawerIndex--;
-            }
-            io.to(roomId).emit('playerLeft', {
-              playerId: socket.id,
-              players: room.players
-            });
-            room.players.forEach((p, idx) => {
-              p.role = idx === room.drawerIndex ? 'drawer' : 'guesser';
-            });
-            io.to(roomId).emit('roleUpdate', { players: room.players });
-          }
-        }
-        
-        console.log(`${player.username} 离开了房间 ${roomId}`);
+      const playerExists = room.players.some(p => p.id === socket.id);
+      if (playerExists) {
+        handlePlayerLeave(room, socket.id);
+        broadcastRoomState(roomId);
       }
     });
   });
@@ -480,8 +549,6 @@ function handleCorrectGuess(room, playerId, guessMessage) {
     players: room.players,
     guessedPlayers: room.guessedPlayers
   });
-
-  console.log(`${player.username} 猜对了，获得${scoreToAdd}分，画师获得${GAME_CONFIG.DRAWER_SCORE}分`);
 }
 
 function updateRoundTimer(roomId) {
@@ -550,7 +617,6 @@ function startNewRound(roomId) {
   room.roundStartTime = Date.now();
   room.timeLeft = GAME_CONFIG.ROUND_TIME;
   
-  // 重置历史记录
   room.historyStates = [];
   room.historyIndex = -1;
   saveHistoryState(room);
@@ -567,12 +633,12 @@ function startNewRound(roomId) {
     currentRound: room.currentRound,
     maxRounds: room.maxRounds,
     timeLeft: room.timeLeft,
-    players: room.players
+    players: room.players,
+    ownerId: room.ownerId,
+    isLocked: room.isLocked
   });
   
   broadcastCanvasFull(roomId);
-
-  console.log(`房间 ${roomId} 第${room.currentRound}轮开始，画师: ${room.players[room.drawerIndex].username}`);
 }
 
 function endGame(roomId) {
@@ -598,10 +664,10 @@ function endGame(roomId) {
     players: room.players,
     winners: winners,
     finalScores: room.players.map(p => ({ username: p.username, score: p.score })),
-    totalRounds: room.maxRounds
+    totalRounds: room.maxRounds,
+    ownerId: room.ownerId,
+    isLocked: room.isLocked
   });
-
-  console.log(`房间 ${roomId} 游戏结束，获胜者: ${winners.map(w => w.username).join(', ')}`);
 
   setTimeout(() => {
     const currentRoom = rooms.get(roomId);
@@ -632,7 +698,6 @@ function resetRoomData(roomId) {
   room.timeLeft = GAME_CONFIG.ROUND_TIME;
   room.isGameFinished = false;
   
-  // 重置历史
   room.historyStates = [];
   room.historyIndex = -1;
   saveHistoryState(room);
@@ -642,6 +707,9 @@ function resetRoomData(roomId) {
     player.isReady = false;
     player.role = 'guesser';
   });
+  
+  // 保留房主和锁定状态
+  // ownerId 和 isLocked 保持不变
 
   const resetMsg = {
     id: Date.now(),
@@ -655,6 +723,8 @@ function resetRoomData(roomId) {
   io.to(roomId).emit('gameReset', {
     roomId: room.id,
     players: room.players,
+    ownerId: room.ownerId,
+    isLocked: room.isLocked,
     currentRound: room.currentRound,
     maxRounds: room.maxRounds,
     timeLeft: room.timeLeft,
@@ -665,8 +735,6 @@ function resetRoomData(roomId) {
   });
   
   broadcastCanvasFull(roomId);
-
-  console.log(`房间 ${roomId} 已被重置`);
 }
 
 const PORT = process.env.PORT || 3001;
