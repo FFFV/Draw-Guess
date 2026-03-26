@@ -31,15 +31,49 @@
             @mouseleave="stopDrawing"
           ></canvas>
           <div class="canvas-controls">
-            <el-button type="danger" @click="clearCanvas" :disabled="!isDrawer">
-              清空画布
-            </el-button>
+            <div class="tool-buttons">
+              <el-button type="danger" @click="clearCanvas" :disabled="!isDrawer">
+                清空画布
+              </el-button>
+              <el-button 
+                :type="eraserMode ? 'warning' : 'default'" 
+                @click="toggleEraser" 
+                :disabled="!isDrawer"
+                class="eraser-btn">
+                {{ eraserMode ? '✏️ 绘画' : '🧽 橡皮擦' }}
+              </el-button>
+              <el-button 
+                type="info" 
+                @click="undo" 
+                :disabled="!isDrawer || !canUndo"
+                class="undo-btn">
+                ↩️ 撤销
+              </el-button>
+              <el-button 
+                type="info" 
+                @click="redo" 
+                :disabled="!isDrawer || !canRedo"
+                class="redo-btn">
+                ↪️ 重做
+              </el-button>
+            </div>
+            <div class="brush-control">
+              <span class="brush-label">画笔粗细: {{ brushSize }}px</span>
+              <el-slider 
+                v-model="brushSize" 
+                :min="1" 
+                :max="10" 
+                :disabled="!isDrawer"
+                style="width: 120px; margin: 0 12px;"
+                @change="handleBrushSizeChange"
+              />
+            </div>
             <div class="color-picker">
               <div 
                 v-for="color in colors" 
                 :key="color"
                 :style="{ backgroundColor: color }"
-                :class="{ active: selectedColor === color }"
+                :class="{ active: selectedColor === color && !eraserMode }"
                 @click="selectColor(color)"
               ></div>
             </div>
@@ -185,6 +219,13 @@ const isDrawing = ref(false)
 const selectedColor = ref('#000000')
 const colors = ['#000000', '#ff3b30', '#ff9500', '#ffcc00', '#4cd964', '#5ac8fa', '#007aff', '#5856d6']
 
+// 画笔增强
+const brushSize = ref(3)          // 画笔粗细 1-10
+const eraserMode = ref(false)     // 擦除模式
+let originalColor = '#000000'     // 保存退出擦除前的颜色
+const canUndo = ref(false)        // 是否可撤销
+const canRedo = ref(false)        // 是否可重做
+
 // 当前画图数据
 const drawingData = ref({
   lines: [],
@@ -216,7 +257,7 @@ const joinRoom = () => {
     roomId.value = inputRoomId.value
   })
 
-  // 监听服务器事件（与之前相同，略）
+  // 监听服务器事件
   socket.value.on('roomInfo', (data) => {
     players.value = data.players
     role.value = data.players.find(p => p.id === socket.value.id)?.role || ''
@@ -227,6 +268,8 @@ const joinRoom = () => {
     maxRounds.value = data.maxRounds || 10
     timeLeft.value = data.timeLeft || 90
     redrawCanvas(data.drawingData)
+    // 重置撤销重做状态（由后端历史状态控制）
+    updateUndoRedoStatus(data)
   })
 
   socket.value.on('roomFull', (data) => {
@@ -245,8 +288,11 @@ const joinRoom = () => {
     players.value = data.players
   })
 
-  socket.value.on('drawingUpdate', (data) => {
-    handleDrawingUpdate(data)
+  // 全量画布更新（用于撤销/重做/同步）
+  socket.value.on('canvasUpdate', (data) => {
+    drawingData.value = data.drawingData
+    redrawCanvas(data.drawingData)
+    updateUndoRedoStatus(data)
   })
 
   socket.value.on('chatMessage', (msg) => {
@@ -272,6 +318,7 @@ const joinRoom = () => {
     maxRounds.value = data.maxRounds
     timeLeft.value = data.timeLeft
     guessedPlayers.value = []
+    updateUndoRedoStatus(data)
   })
 
   socket.value.on('newRound', (data) => {
@@ -284,6 +331,7 @@ const joinRoom = () => {
     guessedPlayers.value = []
     clearCanvas(false)
     redrawCanvas(data.drawingData)
+    updateUndoRedoStatus(data)
   })
 
   socket.value.on('timerUpdate', (data) => {
@@ -331,29 +379,24 @@ const joinRoom = () => {
   })
 
   socket.value.on('gameReset', (data) => {
-  // 更新房间数据
-  players.value = data.players;
-  roomId.value = data.roomId;
-  currentRound.value = data.currentRound;
-  maxRounds.value = data.maxRounds;
-  timeLeft.value = data.timeLeft;
-  chatHistory.value = data.chatHistory;
-  drawingData.value = data.drawingData;
-  
-  // 重置游戏状态
-  isGameStarted.value = false;
-  isGameFinished.value = false;
-  role.value = '';          // 重置角色
-  currentWord.value = '';   // 清空当前词语
-  guessedPlayers.value = [];
-  
-  // 重置画布并重绘
-  clearCanvas(false);
-  redrawCanvas(data.drawingData);
-  
-  // 滚动聊天到底部
-  scrollChatToBottom();
-  
+    players.value = data.players;
+    roomId.value = data.roomId;
+    currentRound.value = data.currentRound;
+    maxRounds.value = data.maxRounds;
+    timeLeft.value = data.timeLeft;
+    chatHistory.value = data.chatHistory;
+    drawingData.value = data.drawingData;
+    
+    isGameStarted.value = false;
+    isGameFinished.value = false;
+    role.value = '';
+    currentWord.value = '';
+    guessedPlayers.value = [];
+    
+    clearCanvas(false);
+    redrawCanvas(data.drawingData);
+    scrollChatToBottom();
+    updateUndoRedoStatus(data);
   });
 }
 
@@ -367,10 +410,16 @@ const toggleReady = () => {
 // 画布初始化
 onMounted(() => {
   ctx.value = canvas.value.getContext('2d')
-  ctx.value.lineWidth = 3
+  ctx.value.lineWidth = brushSize.value
   ctx.value.lineCap = 'round'
   ctx.value.lineJoin = 'round'
 })
+
+// 获取当前实际使用的颜色（考虑橡皮擦模式）
+const getCurrentColor = () => {
+  if (eraserMode.value) return '#FFFFFF'
+  return selectedColor.value
+}
 
 // 开始绘制
 const startDrawing = (e) => {
@@ -385,6 +434,7 @@ const startDrawing = (e) => {
   isDrawing.value = true
   lastX.value = x
   lastY.value = y
+  strokeInProgress.value = true // 标记当前笔画开始
   
   if (socket.value) {
     socket.value.emit('draw', {
@@ -392,7 +442,8 @@ const startDrawing = (e) => {
       x,
       y,
       type: 'start',
-      color: selectedColor.value
+      color: getCurrentColor(),
+      lineWidth: brushSize.value
     })
   }
 }
@@ -413,8 +464,8 @@ const draw = (e) => {
     return
   }
   
-  ctx.value.strokeStyle = selectedColor.value
-  ctx.value.lineWidth = 3
+  ctx.value.strokeStyle = getCurrentColor()
+  ctx.value.lineWidth = brushSize.value
   ctx.value.beginPath()
   ctx.value.moveTo(lastX.value, lastY.value)
   ctx.value.lineTo(x, y)
@@ -426,7 +477,8 @@ const draw = (e) => {
       x,
       y,
       type: 'move',
-      color: selectedColor.value
+      color: getCurrentColor(),
+      lineWidth: brushSize.value
     })
   }
   
@@ -434,8 +486,13 @@ const draw = (e) => {
   lastY.value = y
 }
 
-// 停止绘制
+// 停止绘制，通知服务器保存历史状态
 const stopDrawing = () => {
+  if (isDrawing.value && isDrawer.value && strokeInProgress.value) {
+    // 只有真正有绘制动作时才发送结束信号
+    socket.value.emit('drawEnd', { roomId: roomId.value })
+    strokeInProgress.value = false
+  }
   isDrawing.value = false
   lastX.value = null
   lastY.value = null
@@ -445,46 +502,69 @@ const stopDrawing = () => {
 const clearCanvas = (emitEvent = true) => {
   ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
   if (emitEvent && socket.value && isDrawer.value) {
-    socket.value.emit('draw', {
-      roomId: roomId.value,
-      type: 'clear'
-    })
+    socket.value.emit('drawClear', { roomId: roomId.value })
   }
 }
 
-// 选择颜色
+// 选择颜色，退出橡皮擦模式
 const selectColor = (color) => {
+  eraserMode.value = false
   selectedColor.value = color
 }
 
-// 处理远程绘制更新
-const handleDrawingUpdate = (data) => {
-  ctx.value.lineWidth = 3
-  ctx.value.lineCap = 'round'
-  ctx.value.lineJoin = 'round'
-  
-  if (data.type === 'start') {
-    ctx.value.strokeStyle = data.color
-    ctx.value.beginPath()
-    ctx.value.moveTo(data.x, data.y)
-  } else if (data.type === 'move') {
-    ctx.value.lineTo(data.x, data.y)
-    ctx.value.stroke()
-  } else if (data.type === 'clear') {
-    ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
+// 切换橡皮擦模式
+const toggleEraser = () => {
+  if (!isDrawer.value) return
+  if (eraserMode.value) {
+    // 退出擦除，恢复原色
+    eraserMode.value = false
+    selectedColor.value = originalColor
+  } else {
+    // 进入擦除，保存当前颜色
+    originalColor = selectedColor.value
+    eraserMode.value = true
   }
 }
 
-// 重新绘制画布
+// 粗细变化
+const handleBrushSizeChange = (value) => {
+  ctx.value.lineWidth = value
+}
+
+// 撤销
+const undo = () => {
+  if (!isDrawer.value || !socket.value) return
+  socket.value.emit('undo', { roomId: roomId.value })
+}
+
+// 重做
+const redo = () => {
+  if (!isDrawer.value || !socket.value) return
+  socket.value.emit('redo', { roomId: roomId.value })
+}
+
+// 更新撤销/重做按钮状态（根据后端返回的可用性）
+const updateUndoRedoStatus = (data) => {
+  canUndo.value = data.canUndo || false
+  canRedo.value = data.canRedo || false
+}
+
+// 处理远程绘制更新（全量）
+const handleDrawingUpdate = (data) => {
+  redrawCanvas(data.drawingData)
+}
+
+// 重新绘制画布（全量）
 const redrawCanvas = (data) => {
+  if (!ctx.value) return
   ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
-  ctx.value.lineWidth = 3
   ctx.value.lineCap = 'round'
   ctx.value.lineJoin = 'round'
   
   data.lines.forEach(line => {
-    if (line.points.length > 0) {
+    if (line.points && line.points.length > 0) {
       ctx.value.strokeStyle = line.color || '#000000'
+      ctx.value.lineWidth = line.lineWidth || 3
       ctx.value.beginPath()
       ctx.value.moveTo(line.points[0].x, line.points[0].y)
       for (let i = 1; i < line.points.length; i++) {
@@ -519,9 +599,10 @@ const scrollChatToBottom = () => {
 // 监听聊天历史变化
 watch(chatHistory, scrollChatToBottom, { deep: true })
 
-// 最后位置记录
+// 最后位置记录及笔画标记
 const lastX = ref(null)
 const lastY = ref(null)
+const strokeInProgress = ref(false)
 
 // 清理
 onUnmounted(() => {
@@ -532,7 +613,65 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 保留原有样式，可根据需要微调 */
+/* 原有样式保持不变，新增工具按钮样式 */
+.canvas-controls {
+  background: #2c3e50;
+  padding: 15px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.tool-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.brush-control {
+  display: flex;
+  align-items: center;
+  background: rgba(255,255,255,0.2);
+  padding: 4px 12px;
+  border-radius: 20px;
+}
+
+.brush-label {
+  color: white;
+  font-size: 0.85rem;
+  margin-right: 8px;
+}
+
+.eraser-btn, .undo-btn, .redo-btn {
+  transition: all 0.2s;
+}
+
+.color-picker {
+  display: flex;
+  gap: 10px;
+}
+
+.color-picker div {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.2s;
+}
+
+.color-picker div:hover {
+  transform: scale(1.2);
+}
+
+.color-picker div.active {
+  border-color: white;
+  transform: scale(1.2);
+}
+
+/* 其余原有样式保持不变... */
 .game-container {
   max-width: 80vw;
   margin: 0 auto;
@@ -627,42 +766,11 @@ onUnmounted(() => {
 canvas {
   flex: 1;
   cursor: crosshair;
-  background: #f8f9fa;
+background: #ffffff;
 }
 
-.canvas-controls {
-  background: #2c3e50;
-  padding: 15px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.color-picker {
-  display: flex;
-  gap: 10px;
-}
-
-.color-picker div {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  cursor: pointer;
-  border: 2px solid transparent;
-  transition: transform 0.2s;
-}
-
-.color-picker div:hover {
-  transform: scale(1.2);
-}
-
-.color-picker div.active {
-  border-color: white;
-  transform: scale(1.2);
-}
-
-
-.game-info-card {background: rgba(255, 255, 255, 0.9);
+.game-info-card {
+  background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(5px);
   border-radius: 15px;
   border: none;
@@ -671,7 +779,8 @@ canvas {
   max-height: 100%;
 }
 
-.chat-card {background: rgba(255, 255, 255, 0.9);
+.chat-card {
+  background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(5px);
   border-radius: 15px;
   border: none;
@@ -679,7 +788,7 @@ canvas {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden; /* 防止内容溢出影响flex计算 */
+  overflow: hidden;
 }
 
 .role-info h3 {

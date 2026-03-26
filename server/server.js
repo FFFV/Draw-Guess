@@ -30,6 +30,7 @@ const GAME_CONFIG = {
   ROUND_TIME: 90,
   DRAWER_SCORE: 3,
   GUESSER_SCORES: [10, 8, 6, 4, 2],
+  MAX_HISTORY: 30  // 最大历史记录数
 };
 
 // 游戏房间数据
@@ -55,10 +56,61 @@ function createRoom(roomId) {
     maxRounds: 0,
     guessedPlayers: [],
     isGameFinished: false,
-    drawerHistory: []
+    drawerHistory: [],
+    // 撤销/重做历史栈
+    historyStates: [],   // 存储绘画状态快照
+    historyIndex: -1,
   };
   rooms.set(roomId, room);
+  // 初始化历史状态
+  saveHistoryState(room);
   return room;
+}
+
+// 保存当前绘画状态到历史（用于撤销/重做）
+function saveHistoryState(room) {
+  const snapshot = JSON.parse(JSON.stringify(room.drawingData));
+  // 如果当前索引不是最后一个，则删除之后的记录
+  if (room.historyIndex < room.historyStates.length - 1) {
+    room.historyStates = room.historyStates.slice(0, room.historyIndex + 1);
+  }
+  room.historyStates.push(snapshot);
+  if (room.historyStates.length > GAME_CONFIG.MAX_HISTORY) {
+    room.historyStates.shift();
+  } else {
+    room.historyIndex = room.historyStates.length - 1;
+  }
+}
+
+// 撤销：恢复到上一个状态
+function undoDrawing(room) {
+  if (room.historyIndex > 0) {
+    room.historyIndex--;
+    room.drawingData = JSON.parse(JSON.stringify(room.historyStates[room.historyIndex]));
+    return true;
+  }
+  return false;
+}
+
+// 重做：恢复到下一个状态
+function redoDrawing(room) {
+  if (room.historyIndex < room.historyStates.length - 1) {
+    room.historyIndex++;
+    room.drawingData = JSON.parse(JSON.stringify(room.historyStates[room.historyIndex]));
+    return true;
+  }
+  return false;
+}
+
+// 广播全量画布数据
+function broadcastCanvasFull(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  io.to(roomId).emit('canvasUpdate', {
+    drawingData: room.drawingData,
+    canUndo: room.historyIndex > 0,
+    canRedo: room.historyIndex < room.historyStates.length - 1
+  });
 }
 
 function getOrCreateRoom(roomId) {
@@ -114,6 +166,12 @@ function startGameLogic(roomId) {
   room.roundStartTime = Date.now();
   room.timeLeft = GAME_CONFIG.ROUND_TIME;
   
+  // 重置绘画数据与历史
+  room.drawingData = { lines: [], clearCount: 0 };
+  room.historyStates = [];
+  room.historyIndex = -1;
+  saveHistoryState(room);
+  
   room.roundTimer = setInterval(() => {
     updateRoundTimer(roomId);
   }, 1000);
@@ -127,7 +185,8 @@ function startGameLogic(roomId) {
     timeLeft: room.timeLeft,
     players: room.players
   });
-
+  
+  broadcastCanvasFull(roomId);
   console.log(`房间 ${roomId} 游戏开始，画师: ${room.players[room.drawerIndex].username}`);
 }
 
@@ -187,24 +246,75 @@ io.on('connection', (socket) => {
     checkAllReady(roomId);
   });
 
+  // 绘图事件（增量更新，同时保存状态）
   socket.on('draw', (data) => {
-    const { roomId, x, y, type } = data;
+    const { roomId, x, y, type, color, lineWidth } = data;
     const room = rooms.get(roomId);
     if (!room) return;
-
+    // 只有画图者可以绘图
+    const drawerPlayer = room.players[room.drawerIndex];
+    if (!drawerPlayer || drawerPlayer.id !== socket.id) return;
+    
     if (type === 'start') {
-      room.drawingData.lines.push({ points: [{ x, y }], color: data.color });
+      // 开始新线条
+      room.drawingData.lines.push({ 
+        points: [{ x, y }], 
+        color: color || '#000000',
+        lineWidth: lineWidth || 3
+      });
     } else if (type === 'move') {
       const currentLine = room.drawingData.lines[room.drawingData.lines.length - 1];
       if (currentLine) {
         currentLine.points.push({ x, y });
       }
-    } else if (type === 'clear') {
-      room.drawingData.lines = [];
-      room.drawingData.clearCount++;
     }
-
-    socket.to(roomId).emit('drawingUpdate', data);
+    // 广播全量更新给所有客户端（包括自己，保证同步）
+    broadcastCanvasFull(roomId);
+  });
+  
+  // 笔画结束，保存历史状态
+  socket.on('drawEnd', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    const drawerPlayer = room.players[room.drawerIndex];
+    if (!drawerPlayer || drawerPlayer.id !== socket.id) return;
+    saveHistoryState(room);
+    broadcastCanvasFull(roomId);
+  });
+  
+  // 清空画布
+  socket.on('drawClear', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    const drawerPlayer = room.players[room.drawerIndex];
+    if (!drawerPlayer || drawerPlayer.id !== socket.id) return;
+    // 保存当前状态到历史
+    saveHistoryState(room);
+    room.drawingData = { lines: [], clearCount: room.drawingData.clearCount + 1 };
+    saveHistoryState(room); // 清空后再保存一次
+    broadcastCanvasFull(roomId);
+  });
+  
+  // 撤销
+  socket.on('undo', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    const drawerPlayer = room.players[room.drawerIndex];
+    if (!drawerPlayer || drawerPlayer.id !== socket.id) return;
+    if (undoDrawing(room)) {
+      broadcastCanvasFull(roomId);
+    }
+  });
+  
+  // 重做
+  socket.on('redo', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    const drawerPlayer = room.players[room.drawerIndex];
+    if (!drawerPlayer || drawerPlayer.id !== socket.id) return;
+    if (redoDrawing(room)) {
+      broadcastCanvasFull(roomId);
+    }
   });
 
   socket.on('chatMessage', (data) => {
@@ -255,7 +365,6 @@ io.on('connection', (socket) => {
   });
   
   socket.on('startGame', (roomId) => {
-    // 保留手动开始作为备用，但通常自动开始就够了
     startGameLogic(roomId);
   });
 
@@ -430,6 +539,11 @@ function startNewRound(roomId) {
   room.state = GAME_STATE.DRAWING;
   room.roundStartTime = Date.now();
   room.timeLeft = GAME_CONFIG.ROUND_TIME;
+  
+  // 重置历史记录
+  room.historyStates = [];
+  room.historyIndex = -1;
+  saveHistoryState(room);
 
   room.roundTimer = setInterval(() => {
     updateRoundTimer(roomId);
@@ -445,6 +559,8 @@ function startNewRound(roomId) {
     timeLeft: room.timeLeft,
     players: room.players
   });
+  
+  broadcastCanvasFull(roomId);
 
   console.log(`房间 ${roomId} 第${room.currentRound}轮开始，画师: ${room.players[room.drawerIndex].username}`);
 }
@@ -489,15 +605,13 @@ function resetRoomData(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
 
-  // 清除计时器
   if (room.roundTimer) {
     clearInterval(room.roundTimer);
     room.roundTimer = null;
   }
 
-  // 重置游戏核心数据
   room.state = GAME_STATE.WAITING;
-  room.word = getRandomWord(); // 重置一个随机词（实际游戏开始时会重新生成）
+  room.word = getRandomWord();
   room.drawingData = { lines: [], clearCount: 0 };
   room.currentRound = 0;
   room.maxRounds = 0;
@@ -507,15 +621,18 @@ function resetRoomData(roomId) {
   room.roundStartTime = null;
   room.timeLeft = GAME_CONFIG.ROUND_TIME;
   room.isGameFinished = false;
+  
+  // 重置历史
+  room.historyStates = [];
+  room.historyIndex = -1;
+  saveHistoryState(room);
 
-  // 重置所有玩家数据
   room.players.forEach(player => {
     player.score = 0;
     player.isReady = false;
-    player.role = 'guesser'; // 重置为猜词者
+    player.role = 'guesser';
   });
 
-  // 添加系统消息
   const resetMsg = {
     id: Date.now(),
     username: '系统',
@@ -525,7 +642,6 @@ function resetRoomData(roomId) {
   };
   room.chatHistory.push(resetMsg);
 
-  // 广播重置后的房间状态
   io.to(roomId).emit('gameReset', {
     roomId: room.id,
     players: room.players,
@@ -537,6 +653,8 @@ function resetRoomData(roomId) {
     drawingData: room.drawingData,
     config: GAME_CONFIG
   });
+  
+  broadcastCanvasFull(roomId);
 
   console.log(`房间 ${roomId} 已被重置`);
 }
