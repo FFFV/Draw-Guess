@@ -3,7 +3,12 @@
     <div class="header">
       <h1>🎨 多人你画我猜</h1>
         <div class="room-info">
-          <el-tag v-if="roomId" type="info" :disable-transitions="true" size="large" :round="true">房间: {{ roomId }}</el-tag>
+          <div v-if="roomId" class="room-badge">
+            <el-tag type="info" size="large" round>房间: {{ roomId }}</el-tag>
+            <el-button type="text" @click="copyRoomId" class="copy-room-btn" title="复制房间号">
+              📋
+            </el-button>
+          </div>
           <el-button v-else type="primary" @click="showJoinDialog = true">
             加入房间
           </el-button>
@@ -169,19 +174,22 @@
 
     <!-- 加入房间模态框 -->
     <el-dialog v-model="showJoinDialog" title="加入游戏房间" width="500px" :close-on-click-modal="false" align-center>
+      <el-alert style="margin-bottom: 20px;" title="和朋友们输入相同的房间号即可一起玩！如果房间设置了密码，需要输入正确密码。" type="primary" :closable="false" show-icon/>
       <el-form>
-        <el-form-item label="用户名">
+        <el-form-item label="用户名" :required="true">
           <el-input v-model="username" placeholder="请输入用户名" />
         </el-form-item>
-        <el-form-item label="房间号">
+        <el-form-item label="房间号" :required="true">
           <el-input v-model="inputRoomId" placeholder="请输入房间号" />
+        </el-form-item>
+        <el-form-item label="房间密码">
+          <el-input v-model="roomPassword" placeholder="如果房间设置了密码，请输入" type="password" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showJoinDialog = false">取消</el-button>
         <el-button type="primary" @click="joinRoom">加入房间</el-button>
       </template>
-      <p class="hint">提示: 和朋友们输入相同的房间号即可一起玩！</p>
     </el-dialog>
   </div>
 </template>
@@ -198,6 +206,7 @@ const roomId = ref('')
 const username = ref(`玩家${Math.floor(Math.random() * 1000)}`)
 const inputRoomId = ref('room1')
 const showJoinDialog = ref(true) // 控制弹窗显示
+const roomPassword = ref('')
 
 // 游戏状态
 const players = ref([])
@@ -237,6 +246,18 @@ const isDrawer = computed(() => role.value === 'drawer')
 const allPlayersReady = computed(() => {
   return players.value.length >= 2 && players.value.every(p => p.isReady)
 })
+
+// 复制房间号
+const copyRoomId = async () => {
+  if (!roomId.value) return
+  try {
+    await navigator.clipboard.writeText(roomId.value)
+    ElMessage.success(`房间号 ${roomId.value} 已复制到剪贴板，快邀请好友吧！`)
+  } catch (err) {
+    ElMessage.error('复制失败，请手动复制')
+  }
+}
+
 const readyCount = computed(() => {
   return players.value.filter(p => p.isReady).length
 })
@@ -252,13 +273,24 @@ const joinRoom = () => {
   
   socket.value.on('connect', () => {
     isConnected.value = true
-    showJoinDialog.value = false
-    socket.value.emit('joinRoom', inputRoomId.value, username.value)
+    socket.value.emit('joinRoom', inputRoomId.value, username.value, roomPassword.value)
     roomId.value = inputRoomId.value
+  })
+
+  // 监听加入失败（密码错误等）
+  socket.value.on('joinError', (data) => {
+    ElMessage.error(data.message)
+    // 断开连接，让用户重新尝试
+    if (socket.value) {
+      socket.value.disconnect()
+      socket.value = null
+      isConnected.value = false
+    }
   })
 
   // 监听服务器事件
   socket.value.on('roomInfo', (data) => {
+     showJoinDialog.value = false
     players.value = data.players
     role.value = data.players.find(p => p.id === socket.value.id)?.role || ''
     currentWord.value = data.word || ''
@@ -274,6 +306,11 @@ const joinRoom = () => {
 
   socket.value.on('roomFull', (data) => {
     ElMessage.error(`房间已满，最多支持${data.maxPlayers}人同时游戏`)
+    if (socket.value) {
+      socket.value.disconnect()
+      socket.value = null
+      isConnected.value = false
+    }
   })
 
   socket.value.on('playerJoined', (data) => {
@@ -613,7 +650,21 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 原有样式保持不变，新增工具按钮样式 */
+.room-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.copy-room-btn {
+  font-size: 18px;
+  padding: 0 4px;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+.copy-room-btn:hover {
+  transform: scale(1.1);
+}
+
 .canvas-controls {
   background: #2c3e50;
   padding: 15px;
@@ -916,13 +967,6 @@ background: #ffffff;
 .chat-input {
   display: flex;
   gap: 10px;
-}
-
-.hint {
-  text-align: center;
-  color: #7f8c8d;
-  margin-top: 20px;
-  font-size: 0.9rem;
 }
 
 @keyframes fadeIn {

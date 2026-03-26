@@ -40,9 +40,10 @@ function getRandomWord() {
   return WORDS[Math.floor(Math.random() * WORDS.length)];
 }
 
-function createRoom(roomId) {
+function createRoom(roomId, password = null) {
   const room = {
     id: roomId,
+    password: password,
     players: [],
     drawerIndex: 0,
     word: getRandomWord(),
@@ -65,6 +66,20 @@ function createRoom(roomId) {
   // 初始化历史状态
   saveHistoryState(room);
   return room;
+}
+
+function getOrCreateRoom(roomId, password) {
+  let room = rooms.get(roomId);
+  if (!room) {
+    // 房间不存在，创建并设置密码（如果有传入）
+    room = createRoom(roomId, password || null);
+  } else {
+    // 房间已存在，验证密码（如果房间有密码且传入密码不匹配）
+    if (room.password && room.password !== password) {
+      return { error: '密码错误' };
+    }
+  }
+  return { room };
 }
 
 // 保存当前绘画状态到历史（用于撤销/重做）
@@ -111,14 +126,6 @@ function broadcastCanvasFull(roomId) {
     canUndo: room.historyIndex > 0,
     canRedo: room.historyIndex < room.historyStates.length - 1
   });
-}
-
-function getOrCreateRoom(roomId) {
-  let room = rooms.get(roomId);
-  if (!room) {
-    room = createRoom(roomId);
-  }
-  return room;
 }
 
 function getNextDrawerIndex(room) {
@@ -193,9 +200,12 @@ function startGameLogic(roomId) {
 io.on('connection', (socket) => {
   console.log('新用户连接:', socket.id);
 
-  socket.on('joinRoom', (roomId, username) => {
-    const room = getOrCreateRoom(roomId);
-    
+  socket.on('joinRoom', (roomId, username, password) => {
+    const {error,room} = getOrCreateRoom(roomId, password);
+    if (error) {
+      socket.emit('joinError', { message: error });
+      return;
+    }
     if (room.players.length >= GAME_CONFIG.MAX_PLAYERS) {
       socket.emit('roomFull', { maxPlayers: GAME_CONFIG.MAX_PLAYERS });
       return;
