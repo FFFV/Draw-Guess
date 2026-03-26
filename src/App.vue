@@ -171,12 +171,12 @@
             <div 
               v-for="msg in chatHistory" 
               :key="msg.id"
-              :class="['chat-message', { correct: msg.isCorrect }]"
+              :class="['chat-message', { correct: msg.correctGuess }]"
             >
               <span class="username">{{ msg.username }}:</span>
               <span class="message">{{ msg.message }}</span>
               <span class="time">{{ msg.timestamp }}</span>
-              <span v-if="msg.isCorrect" class="correct-badge">✅ 猜对了！</span>
+              <span v-if="msg.correctGuess" class="correct-badge">✅ 猜对了！</span>
             </div>
           </div>
           <div class="chat-input">
@@ -218,14 +218,26 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
+import type { Socket } from 'socket.io-client'
 import io from 'socket.io-client'
 import { ElMessage } from 'element-plus'
 import { ElMessageBox } from 'element-plus'
+import { validateUsername, validateRoomId, validateRoomPassword, sanitizeInput, validateChatMessage } from './utils/validation'
+import type { 
+  Player, 
+  ChatMessage, 
+  DrawingData, 
+  DrawingLine,
+  GuessedPlayer,
+  ServerRoomInfo,
+  ServerJoinError
+} from '@/types/game'
+import type { ServerEvents } from '@/types/socket-events'
 
 // Socket.io 连接
-const socket = ref(null)
+const socket = ref<Socket | null>(null)
 const isConnected = ref(false)
 const roomId = ref('')
 const username = ref(`玩家${Math.floor(Math.random() * 1000)}`)
@@ -234,24 +246,24 @@ const showJoinDialog = ref(true) // 控制弹窗显示
 const roomPassword = ref('')
 
 // 游戏状态
-const players = ref([])
-const role = ref('')
+const players = ref<Player[]>([])
+const role = ref<'drawer' | 'guesser' | ''>('')
 const currentWord = ref('')
 const isGameStarted = ref(false)
-const chatHistory = ref([])
+const chatHistory = ref<ChatMessage[]>([])
 const chatMessage = ref('')
 const currentRound = ref(1)
 const maxRounds = ref(10)
 const timeLeft = ref(90)
-const guessedPlayers = ref([])
+const guessedPlayers = ref<GuessedPlayer[]>([])
 const isGameFinished = ref(false)
 const isRoomOwner = ref(false)
 const isRoomLocked = ref(false)
 const roomOwnerId = ref('')
 
 // 画布相关
-const canvas = ref(null)
-const ctx = ref(null)
+const canvas = ref<HTMLCanvasElement | null>(null)
+const ctx = ref<CanvasRenderingContext2D | null>(null)
 const isDrawing = ref(false)
 const selectedColor = ref('#000000')
 const colors = ['#000000', '#ff3b30', '#ff9500', '#ffcc00', '#4cd964', '#5ac8fa', '#007aff', '#5856d6']
@@ -264,7 +276,7 @@ const canUndo = ref(false)        // 是否可撤销
 const canRedo = ref(false)        // 是否可重做
 
 // 当前画图数据
-const drawingData = ref({
+const drawingData = ref<DrawingData>({
   lines: [],
   clearCount: 0
 })
@@ -292,21 +304,42 @@ const readyCount = computed(() => {
 
 // 加入房间
 const joinRoom = () => {
-  if (!username.value.trim() || !inputRoomId.value.trim()) {
-    ElMessage.error('请输入用户名和房间号')
+  // 清理输入
+  const sanitizedUsername = sanitizeInput(username.value)
+  const sanitizedRoomId = sanitizeInput(inputRoomId.value)
+  const sanitizedPassword = roomPassword.value ? sanitizeInput(roomPassword.value) : ''
+
+  // 验证用户名
+  const usernameValidation = validateUsername(sanitizedUsername)
+  if (!usernameValidation.valid) {
+    ElMessage.error(usernameValidation.message || '用户名验证失败')
     return
   }
 
-  socket.value = io('http://localhost:3001')
+  // 验证房间号
+  const roomIdValidation = validateRoomId(sanitizedRoomId)
+  if (!roomIdValidation.valid) {
+    ElMessage.error(roomIdValidation.message || '房间号验证失败')
+    return
+  }
+
+  // 验证密码（可选）
+  const passwordValidation = validateRoomPassword(sanitizedPassword)
+  if (!passwordValidation.valid) {
+    ElMessage.error(passwordValidation.message || '密码验证失败')
+    return
+  }
+
+  socket.value = io('http://localhost:3002')
   
   socket.value.on('connect', () => {
     isConnected.value = true
-    socket.value.emit('joinRoom', inputRoomId.value, username.value, roomPassword.value)
-    roomId.value = inputRoomId.value
+    socket.value?.emit('joinRoom', sanitizedRoomId, sanitizedUsername, sanitizedPassword)
+    roomId.value = sanitizedRoomId
   })
 
   // 监听加入失败（密码错误等）
-  socket.value.on('joinError', (data) => {
+  socket.value.on('joinError', (data: ServerJoinError) => {
     ElMessage.error(data.message)
     // 断开连接，让用户重新尝试
     if (socket.value) {
@@ -317,13 +350,13 @@ const joinRoom = () => {
   })
 
   // 监听服务器事件
-  socket.value.on('roomInfo', (data) => {
+  socket.value.on('roomInfo', (data: ServerRoomInfo) => {
     showJoinDialog.value = false
     players.value = data.players
-    isRoomOwner.value = (socket.value.id === data.ownerId)
+    isRoomOwner.value = (socket.value?.id === data.ownerId)
     isRoomLocked.value = data.isLocked
-    role.value = data.players.find(p => p.id === socket.value.id)?.role || ''
-    currentWord.value = data.word || ''
+    role.value = data.players.find(p => p.id === socket.value?.id)?.role || ''
+    // currentWord is initialized to empty string, no word in room info
     chatHistory.value = data.chatHistory
     drawingData.value = data.drawingData
     currentRound.value = data.currentRound || 1
@@ -336,21 +369,21 @@ const joinRoom = () => {
   })
 
   // 监听房间锁定状态变化
-  socket.value.on('roomLocked', (data) => {
+  socket.value.on('roomLocked', (data: ServerEvents['roomLocked']) => {
     isRoomLocked.value = data.isLocked
     ElMessage.info(data.isLocked ? '房间已锁定，新玩家无法加入' : '房间已解锁')
   })
 
   // 监听房间状态更新（玩家列表、房主等）
-  socket.value.on('roomStateUpdate', (data) => {
+  socket.value.on('roomStateUpdate', (data: ServerEvents['roomStateUpdate']) => {
     players.value = data.players
-    isRoomOwner.value = (socket.value.id === data.ownerId)
+    isRoomOwner.value = (socket.value?.id === data.ownerId)
     isRoomLocked.value = data.isLocked
     roomOwnerId.value = data.ownerId
   })
 
   // 监听被踢出
-  socket.value.on('kicked', (data) => {
+  socket.value.on('kicked', (data: ServerEvents['kicked']) => {
     ElMessage.error(data.message)
     if (socket.value) {
       socket.value.disconnect()
@@ -365,7 +398,7 @@ const joinRoom = () => {
     roomOwnerId.value = data.ownerId
   })
 
-  socket.value.on('roomFull', (data) => {
+  socket.value.on('roomFull', (data: ServerEvents['roomFull']) => {
     ElMessage.error(`房间已满，最多支持${data.maxPlayers}人同时游戏`)
     if (socket.value) {
       socket.value.disconnect()
@@ -374,58 +407,58 @@ const joinRoom = () => {
     }
   })
 
-  socket.value.on('playerJoined', (data) => {
+  socket.value.on('playerJoined', (data: ServerEvents['playerJoined']) => {
     players.value = data.players
     roomOwnerId.value = data.ownerId
   })
 
-  socket.value.on('playerLeft', (data) => {
+  socket.value.on('playerLeft', (data: ServerEvents['playerLeft']) => {
     players.value = data.players
     roomOwnerId.value = data.ownerId
   })
 
-  socket.value.on('playerListUpdate', (data) => {
+  socket.value.on('playerListUpdate', (data: ServerEvents['playerListUpdate']) => {
     players.value = data.players
   })
 
   // 全量画布更新（用于撤销/重做/同步）
-  socket.value.on('canvasUpdate', (data) => {
+  socket.value.on('canvasUpdate', (data: ServerEvents['canvasUpdate']) => {
     drawingData.value = data.drawingData
     redrawCanvas(data.drawingData)
     updateUndoRedoStatus(data)
   })
 
-  socket.value.on('chatMessage', (msg) => {
+  socket.value.on('chatMessage', (msg: ServerEvents['chatMessage']) => {
     chatHistory.value.push(msg)
     scrollChatToBottom()
   })
 
-  socket.value.on('chatError', (data) => {
+  socket.value.on('chatError', (data: ServerEvents['chatError']) => {
     ElMessage.error(data.message)
   })
 
-  socket.value.on('gameError', (data) => {
+  socket.value.on('gameError', (data: ServerEvents['gameError']) => {
     ElMessage.error(data.message)
   })
 
-  socket.value.on('gameStarted', (data) => {
+  socket.value.on('gameStarted', (data: ServerEvents['gameStarted']) => {
     isGameStarted.value = true
     isGameFinished.value = false
     players.value = data.players
-    role.value = data.players.find(p => p.id === socket.value.id)?.role || ''
+    role.value = data.players.find(p => p.id === socket.value?.id)?.role || ''
     currentWord.value = role.value === 'drawer' ? data.word : ''
     currentRound.value = data.currentRound
     maxRounds.value = data.maxRounds
     timeLeft.value = data.timeLeft
     guessedPlayers.value = []
-    isRoomOwner.value = (socket.value.id === data.ownerId)
+    isRoomOwner.value = (socket.value?.id === data.ownerId)
     isRoomLocked.value = data.isLocked
     updateUndoRedoStatus(data)
   })
 
-  socket.value.on('newRound', (data) => {
+  socket.value.on('newRound', (data: ServerEvents['newRound']) => {
     players.value = data.players
-    role.value = data.players.find(p => p.id === socket.value.id)?.role || ''
+    role.value = data.players.find(p => p.id === socket.value?.id)?.role || ''
     currentWord.value = role.value === 'drawer' ? data.word : ''
     drawingData.value = data.drawingData
     currentRound.value = data.currentRound
@@ -437,21 +470,20 @@ const joinRoom = () => {
     updateUndoRedoStatus(data)
   })
 
-  socket.value.on('timerUpdate', (data) => {
+  socket.value.on('timerUpdate', (data: ServerEvents['timerUpdate']) => {
     timeLeft.value = data.timeLeft
   })
 
-  socket.value.on('scoreUpdate', (data) => {
+  socket.value.on('scoreUpdate', (data: ServerEvents['scoreUpdate']) => {
     players.value = data.players
     guessedPlayers.value = data.guessedPlayers
   })
 
-  socket.value.on('roundEnded', (data) => {
+  socket.value.on('roundEnded', (data: ServerEvents['roundEnded']) => {
     const guessedNames = data.guessedPlayers.map(g => g.username).join(', ')
-    const message = `第${data.currentRound}轮结束！词语是: ${data.word}<br/>猜对玩家: ${guessedNames || '无'}`
+    const message = `第${data.currentRound}轮结束！词语是: ${data.word}\n猜对玩家: ${guessedNames || '无'}`
     ElMessage({
       message,
-      dangerouslyUseHTMLString: true,
       type: 'info',
       duration: 5000
     })
@@ -459,15 +491,14 @@ const joinRoom = () => {
     guessedPlayers.value = []
   })
 
-  socket.value.on('gameEnded', (data) => {
+  socket.value.on('gameEnded', (data: ServerEvents['gameEnded']) => {
     isGameStarted.value = false
     isGameFinished.value = true
     const winners = data.winners.map(w => w.username).join(', ')
-    const scores = data.finalScores.map(s => `${s.username}: ${s.score}分`).join('<br/>')
-    const message = `游戏结束！<br/><br/>获胜者: ${winners}<br/><br/>最终得分:<br/>${scores}`
+    const scores = data.finalScores.map(s => `${s.username}: ${s.score}分`).join('\n')
+    const message = `游戏结束！\n\n获胜者: ${winners}\n\n最终得分:\n${scores}`
     ElMessage({
       message,
-      dangerouslyUseHTMLString: true,
       type: 'success',
       duration: 0,
       showClose: true
@@ -481,7 +512,7 @@ const joinRoom = () => {
     showJoinDialog.value = true
   })
 
-  socket.value.on('gameReset', (data) => {
+  socket.value.on('gameReset', (data: ServerEvents['gameReset']) => {
     players.value = data.players;
     roomId.value = data.roomId;
     currentRound.value = data.currentRound;
@@ -513,7 +544,9 @@ const toggleReady = () => {
 
 // 画布初始化
 onMounted(() => {
+  if (!canvas.value) return
   ctx.value = canvas.value.getContext('2d')
+  if (!ctx.value) return
   ctx.value.lineWidth = brushSize.value
   ctx.value.lineCap = 'round'
   ctx.value.lineJoin = 'round'
@@ -526,8 +559,8 @@ const getCurrentColor = () => {
 }
 
 // 开始绘制
-const startDrawing = (e) => {
-  if (!isDrawer.value || !isConnected.value) return
+const startDrawing = (e: MouseEvent) => {
+  if (!isDrawer.value || !isConnected.value || !canvas.value) return
   
   const rect = canvas.value.getBoundingClientRect()
   const scaleX = canvas.value.width / rect.width
@@ -553,8 +586,8 @@ const startDrawing = (e) => {
 }
 
 // 绘制
-const draw = (e) => {
-  if (!isDrawing.value || !isDrawer.value) return
+const draw = (e: MouseEvent) => {
+  if (!isDrawing.value || !isDrawer.value || !canvas.value || !ctx.value) return
   
   const rect = canvas.value.getBoundingClientRect()
   const scaleX = canvas.value.width / rect.width
@@ -594,7 +627,7 @@ const draw = (e) => {
 const stopDrawing = () => {
   if (isDrawing.value && isDrawer.value && strokeInProgress.value) {
     // 只有真正有绘制动作时才发送结束信号
-    socket.value.emit('drawEnd', { roomId: roomId.value })
+    socket.value?.emit('drawEnd', { roomId: roomId.value })
     strokeInProgress.value = false
   }
   isDrawing.value = false
@@ -604,14 +637,15 @@ const stopDrawing = () => {
 
 // 清空画布
 const clearCanvas = (emitEvent = true) => {
+  if (!ctx.value || !canvas.value) return
   ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
   if (emitEvent && socket.value && isDrawer.value) {
-    socket.value.emit('drawClear', { roomId: roomId.value })
+    socket.value?.emit('drawClear', { roomId: roomId.value })
   }
 }
 
 // 选择颜色，退出橡皮擦模式
-const selectColor = (color) => {
+const selectColor = (color: string) => {
   eraserMode.value = false
   selectedColor.value = color
 }
@@ -631,42 +665,42 @@ const toggleEraser = () => {
 }
 
 // 粗细变化
-const handleBrushSizeChange = (value) => {
-  ctx.value.lineWidth = value
+const handleBrushSizeChange = (value: number) => {
+  if (ctx.value) ctx.value.lineWidth = value
 }
 
 // 撤销
 const undo = () => {
   if (!isDrawer.value || !socket.value) return
-  socket.value.emit('undo', { roomId: roomId.value })
+  socket.value?.emit('undo', { roomId: roomId.value })
 }
 
 // 重做
 const redo = () => {
   if (!isDrawer.value || !socket.value) return
-  socket.value.emit('redo', { roomId: roomId.value })
+  socket.value?.emit('redo', { roomId: roomId.value })
 }
 
 // 更新撤销/重做按钮状态（根据后端返回的可用性）
-const updateUndoRedoStatus = (data) => {
-  canUndo.value = data.canUndo || false
-  canRedo.value = data.canRedo || false
-}
-
-// 处理远程绘制更新（全量）
-const handleDrawingUpdate = (data) => {
-  redrawCanvas(data.drawingData)
+const updateUndoRedoStatus = (data: any) => {
+  // 从不同类型的数据中提取撤销/重做状态
+  if ('canUndo' in data) {
+    canUndo.value = data.canUndo || false
+  }
+  if ('canRedo' in data) {
+    canRedo.value = data.canRedo || false
+  }
 }
 
 // 重新绘制画布（全量）
-const redrawCanvas = (data) => {
-  if (!ctx.value) return
+const redrawCanvas = (data: DrawingData) => {
+  if (!ctx.value || !canvas.value) return
   ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
   ctx.value.lineCap = 'round'
   ctx.value.lineJoin = 'round'
   
-  data.lines.forEach(line => {
-    if (line.points && line.points.length > 0) {
+  data.lines.forEach((line: DrawingLine) => {
+    if (line.points && line.points.length > 0 && ctx.value) {
       ctx.value.strokeStyle = line.color || '#000000'
       ctx.value.lineWidth = line.lineWidth || 3
       ctx.value.beginPath()
@@ -681,10 +715,24 @@ const redrawCanvas = (data) => {
 
 // 发送聊天消息
 const sendMessage = () => {
-  if (!chatMessage.value.trim() || !socket.value) return
-  socket.value.emit('chatMessage', {
+  if (!socket.value) return
+  
+  const sanitizedMessage = sanitizeInput(chatMessage.value)
+  const messageValidation = validateChatMessage(sanitizedMessage)
+  
+  if (!messageValidation.valid) {
+    ElMessage.error(messageValidation.message || '消息验证失败')
+    return
+  }
+
+  if (!sanitizedMessage.trim()) {
+    ElMessage.error('消息不能为空')
+    return
+  }
+
+  socket.value?.emit('chatMessage', {
     roomId: roomId.value,
-    message: chatMessage.value,
+    message: sanitizedMessage,
     username: username.value
   })
   chatMessage.value = ''
@@ -692,22 +740,22 @@ const sendMessage = () => {
 
 // 房主锁定/解锁房间
 const toggleRoomLock = () => {
-  if (!isRoomOwner.value) return
-  socket.value.emit('lockRoom', {
+  if (!isRoomOwner.value || !socket.value) return
+  socket.value?.emit('lockRoom', {
     roomId: roomId.value,
     lock: !isRoomLocked.value
   })
 }
 
 // 房主踢出玩家
-const kickPlayer = (targetPlayerId, targetUsername) => {
+const kickPlayer = (targetPlayerId: string, targetUsername: string) => {
   if (!isRoomOwner.value) return
   ElMessageBox.confirm(`确定要踢出玩家 ${targetUsername} 吗？`, '确认踢出', {
     confirmButtonText: '确认',
     cancelButtonText: '取消',
     type: 'warning'
   }).then(() => {
-    socket.value.emit('kickPlayer', {
+    socket.value?.emit('kickPlayer', {
       roomId: roomId.value,
       targetPlayerId: targetPlayerId
     })
@@ -728,8 +776,8 @@ const scrollChatToBottom = () => {
 watch(chatHistory, scrollChatToBottom, { deep: true })
 
 // 最后位置记录及笔画标记
-const lastX = ref(null)
-const lastY = ref(null)
+const lastX = ref<number | null>(null)
+const lastY = ref<number | null>(null)
 const strokeInProgress = ref(false)
 
 // 清理

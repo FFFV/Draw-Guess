@@ -14,7 +14,11 @@
     "vue": "^3.3.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^4.2.0",
+    "@types/node": "^25.5.0",
+    "@types/socket.io-client": "^1.4.36",
+    "@vitejs/plugin-vue": "^4.6.2",
+    "@vue/tsconfig": "^0.9.1",
+    "typescript": "^6.0.2",
     "vite": "^4.4.0"
   }
 }

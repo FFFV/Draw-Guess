@@ -1,6 +1,8 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const { validateJoinRoom, validateDraw, validateChatMessage, validateLockRoom, validateKickPlayer, validateSimpleEvent, sanitizeInput } = require('./middleware/validation');
+const { setupRateLimit } = require('./middleware/rateLimit');
 
 const app = express();
 const server = http.createServer(app);
@@ -10,6 +12,9 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   }
 });
+
+// 设置速率限制
+setupRateLimit(io);
 
 // 游戏配置
 const WORDS = [
@@ -62,6 +67,7 @@ function createRoom(roomId, password = null) {
     drawerHistory: [],
     historyStates: [],
     historyIndex: -1,
+    lastActivity: Date.now(), // 最后活动时间，用于清理闲置房间
   };
   rooms.set(roomId, room);
   saveHistoryState(room);
@@ -279,7 +285,19 @@ io.on('connection', (socket) => {
   console.log('新用户连接:', socket.id);
 
   socket.on('joinRoom', (roomId, username, password) => {
-    const { error, room } = getOrCreateRoom(roomId, password);
+    // 验证输入数据
+    const validation = validateJoinRoom({ roomId, username, password });
+    if (!validation.valid) {
+      socket.emit('joinError', { message: validation.message || '输入验证失败' });
+      return;
+    }
+    
+    // 清理输入
+    const sanitizedRoomId = sanitizeInput(roomId);
+    const sanitizedUsername = sanitizeInput(username);
+    const sanitizedPassword = password ? sanitizeInput(password) : '';
+    
+    const { error, room } = getOrCreateRoom(sanitizedRoomId, sanitizedPassword);
     if (error) {
       socket.emit('joinError', { message: error });
       return;
@@ -298,7 +316,7 @@ io.on('connection', (socket) => {
     
     const player = {
       id: socket.id,
-      username: username || `玩家${room.players.length + 1}`,
+      username: sanitizedUsername || `玩家${room.players.length + 1}`,
       role: 'guesser',
       score: 0,
       isReady: false
@@ -455,6 +473,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('chatMessage', (data) => {
+    // 验证聊天消息数据
+    const validation = validateChatMessage(data);
+    if (!validation.valid) {
+      socket.emit('chatError', { message: validation.message || '消息验证失败' });
+      return;
+    }
+
     const { roomId, message, username } = data;
     const room = rooms.get(roomId);
     if (!room) return;
@@ -467,10 +492,13 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const isCorrectGuess = message.includes(room.word) && room.state === GAME_STATE.DRAWING;
+    // 清理消息内容
+    const sanitizedMessage = sanitizeInput(message);
+    
+    const isCorrectGuess = sanitizedMessage.includes(room.word) && room.state === GAME_STATE.DRAWING;
     
     if (isCorrectGuess) {
-      handleCorrectGuess(room, socket.id, message);
+      handleCorrectGuess(room, socket.id, sanitizedMessage);
       
       const systemMsg = {
         id: Date.now(),
@@ -491,7 +519,7 @@ io.on('connection', (socket) => {
       const chatMsg = {
         id: Date.now(),
         username,
-        message,
+        message: sanitizedMessage,
         timestamp: new Date().toLocaleTimeString(),
         isSystem: false
       };
@@ -737,7 +765,37 @@ function resetRoomData(roomId) {
   broadcastCanvasFull(roomId);
 }
 
-const PORT = process.env.PORT || 3001;
+/**
+ * 清理闲置房间
+ * 30分钟无活动的房间将被清理
+ */
+function cleanupInactiveRooms() {
+  const now = Date.now();
+  const inactiveTimeout = 30 * 60 * 1000; // 30分钟
+  
+  rooms.forEach((room, roomId) => {
+    // 如果房间有玩家，更新最后活动时间
+    if (room.players.length > 0) {
+      room.lastActivity = now;
+      return;
+    }
+    
+    // 空房间且超过30分钟无活动，清理
+    if (now - room.lastActivity > inactiveTimeout) {
+      console.log(`清理闲置房间: ${roomId}`);
+      if (room.roundTimer) {
+        clearInterval(room.roundTimer);
+      }
+      rooms.delete(roomId);
+    }
+  });
+}
+
+// 每5分钟检查一次闲置房间
+setInterval(cleanupInactiveRooms, 5 * 60 * 1000);
+
+const PORT = process.env.PORT || 3002;
 server.listen(PORT, () => {
   console.log(`服务器运行在 http://localhost:${PORT}`);
+  console.log('房间清理定时器已启动（每5分钟检查一次）');
 });
