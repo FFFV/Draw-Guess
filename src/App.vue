@@ -15,6 +15,7 @@
               size="small" 
               @click="toggleRoomLock"
               :disabled="isGameStarted"
+              class="lock-btn"
             >
               {{ isRoomLocked ? '🔓 解锁房间' : '🔒 锁定房间' }}
             </el-button>
@@ -44,31 +45,38 @@
             @mousemove="draw"
             @mouseup="stopDrawing"
             @mouseleave="stopDrawing"
+            @touchstart.prevent="onTouchStart"
+            @touchmove.prevent="onTouchMove"
+            @touchend="onTouchEnd"
+            @touchcancel="onTouchEnd"
           ></canvas>
           <div class="canvas-controls">
             <div class="tool-buttons">
-              <el-button type="danger" @click="clearCanvas" :disabled="!isDrawer">
+              <el-button type="danger" @click="clearCanvas" :disabled="!isDrawer" size="default">
                 清空画布
               </el-button>
               <el-button 
                 :type="eraserMode ? 'warning' : 'default'" 
                 @click="toggleEraser" 
                 :disabled="!isDrawer"
-                class="eraser-btn">
+                class="eraser-btn"
+                size="default">
                 {{ eraserMode ? '✏️ 绘画' : '🧽 橡皮擦' }}
               </el-button>
               <el-button 
                 type="info" 
                 @click="undo" 
                 :disabled="!isDrawer || !canUndo"
-                class="undo-btn">
+                class="undo-btn"
+                size="default">
                 ↩️ 撤销
               </el-button>
               <el-button 
                 type="info" 
                 @click="redo" 
                 :disabled="!isDrawer || !canRedo"
-                class="redo-btn">
+                class="redo-btn"
+                size="default">
                 ↪️ 重做
               </el-button>
             </div>
@@ -111,7 +119,7 @@
           
           <div class="players-list">
             <h3>玩家列表</h3>
-            <el-table :data="players" size="small" style="width: 100%" empty-text="当前房间玩家为空">
+            <el-table :data="players" size="small" style="width: 100%" empty-text="当前房间玩家为空" class="players-table">
               <el-table-column prop="username" label="玩家">
                 <template #default="{ row }">
                   <span :class="{ drawer: row.role === 'drawer' }">
@@ -197,7 +205,7 @@
     </div>
 
     <!-- 加入房间模态框 -->
-    <el-dialog v-model="showJoinDialog" title="加入游戏房间" width="500px" :close-on-click-modal="false" align-center>
+    <el-dialog v-model="showJoinDialog" title="加入游戏房间" width="500px" :close-on-click-modal="false" align-center class="join-dialog">
       <el-alert style="margin-bottom: 20px;" title="和朋友们输入相同的房间号即可一起玩！如果房间设置了密码，需要输入正确密码。" type="primary" :closable="false" show-icon/>
       <el-form>
         <el-form-item label="用户名" :required="true">
@@ -301,6 +309,240 @@ const copyRoomId = async () => {
 const readyCount = computed(() => {
   return players.value.filter(p => p.isReady).length
 })
+
+// 获取画布上的实际坐标（考虑缩放）
+const getCanvasCoords = (clientX: number, clientY: number) => {
+  if (!canvas.value) return null
+  const rect = canvas.value.getBoundingClientRect()
+  const scaleX = canvas.value.width / rect.width
+  const scaleY = canvas.value.height / rect.height
+  const x = (clientX - rect.left) * scaleX
+  const y = (clientY - rect.top) * scaleY
+  // 边界裁剪
+  return { 
+    x: Math.max(0, Math.min(canvas.value.width, x)), 
+    y: Math.max(0, Math.min(canvas.value.height, y)) 
+  }
+}
+
+// 核心绘图方法：开始绘画
+const beginDrawing = (x: number, y: number) => {
+  if (!isDrawer.value || !isConnected.value) return
+  
+  lastX.value = x
+  lastY.value = y
+  strokeInProgress.value = true
+  
+  if (socket.value) {
+    socket.value.emit('draw', {
+      roomId: roomId.value,
+      x,
+      y,
+      type: 'start',
+      color: getCurrentColor(),
+      lineWidth: brushSize.value
+    })
+  }
+}
+
+// 核心绘图方法：绘画中
+const drawing = (x: number, y: number) => {
+  if (!isDrawer.value || !isConnected.value || lastX.value === null || lastY.value === null) return
+  
+  if (!ctx.value) return
+  
+  ctx.value.strokeStyle = getCurrentColor()
+  ctx.value.lineWidth = brushSize.value
+  ctx.value.beginPath()
+  ctx.value.moveTo(lastX.value, lastY.value)
+  ctx.value.lineTo(x, y)
+  ctx.value.stroke()
+  
+  if (socket.value) {
+    socket.value.emit('draw', {
+      roomId: roomId.value,
+      x,
+      y,
+      type: 'move',
+      color: getCurrentColor(),
+      lineWidth: brushSize.value
+    })
+  }
+  
+  lastX.value = x
+  lastY.value = y
+}
+
+// 核心绘图方法：结束绘画
+const endDrawing = () => {
+  if (isDrawing.value && isDrawer.value && strokeInProgress.value) {
+    socket.value?.emit('drawEnd', { roomId: roomId.value })
+    strokeInProgress.value = false
+  }
+  isDrawing.value = false
+  lastX.value = null
+  lastY.value = null
+}
+
+// 鼠标事件
+const startDrawing = (e: MouseEvent) => {
+  if (!isDrawer.value) return
+  e.preventDefault()
+  const coords = getCanvasCoords(e.clientX, e.clientY)
+  if (coords) {
+    isDrawing.value = true
+    beginDrawing(coords.x, coords.y)
+  }
+}
+
+const draw = (e: MouseEvent) => {
+  if (!isDrawing.value) return
+  e.preventDefault()
+  const coords = getCanvasCoords(e.clientX, e.clientY)
+  if (coords) {
+    drawing(coords.x, coords.y)
+  }
+}
+
+const stopDrawing = () => {
+  endDrawing()
+}
+
+// 触摸事件（移动端）
+const onTouchStart = (e: TouchEvent) => {
+  if (!isDrawer.value) return
+  e.preventDefault()
+  const touch = e.touches[0]
+  const coords = getCanvasCoords(touch.clientX, touch.clientY)
+  if (coords) {
+    isDrawing.value = true
+    beginDrawing(coords.x, coords.y)
+  }
+}
+
+const onTouchMove = (e: TouchEvent) => {
+  if (!isDrawing.value) return
+  e.preventDefault()
+  const touch = e.touches[0]
+  const coords = getCanvasCoords(touch.clientX, touch.clientY)
+  if (coords) {
+    drawing(coords.x, coords.y)
+  }
+}
+
+const onTouchEnd = (e: TouchEvent) => {
+  e.preventDefault()
+  endDrawing()
+}
+
+// 获取当前实际使用的颜色（考虑橡皮擦模式）
+const getCurrentColor = () => {
+  if (eraserMode.value) return '#FFFFFF'
+  return selectedColor.value
+}
+
+// 清空画布
+const clearCanvas = (emitEvent = true) => {
+  if (!ctx.value || !canvas.value) return
+  ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
+  if (emitEvent && socket.value && isDrawer.value) {
+    socket.value?.emit('drawClear', { roomId: roomId.value })
+  }
+}
+
+// 选择颜色，退出橡皮擦模式
+const selectColor = (color: string) => {
+  eraserMode.value = false
+  selectedColor.value = color
+}
+
+// 切换橡皮擦模式
+const toggleEraser = () => {
+  if (!isDrawer.value) return
+  if (eraserMode.value) {
+    // 退出擦除，恢复原色
+    eraserMode.value = false
+    selectedColor.value = originalColor
+  } else {
+    // 进入擦除，保存当前颜色
+    originalColor = selectedColor.value
+    eraserMode.value = true
+  }
+}
+
+// 粗细变化
+const handleBrushSizeChange = (value: number) => {
+  if (ctx.value) ctx.value.lineWidth = value
+}
+
+// 撤销
+const undo = () => {
+  if (!isDrawer.value || !socket.value) return
+  socket.value?.emit('undo', { roomId: roomId.value })
+}
+
+// 重做
+const redo = () => {
+  if (!isDrawer.value || !socket.value) return
+  socket.value?.emit('redo', { roomId: roomId.value })
+}
+
+// 更新撤销/重做按钮状态（根据后端返回的可用性）
+const updateUndoRedoStatus = (data: any) => {
+  // 从不同类型的数据中提取撤销/重做状态
+  if ('canUndo' in data) {
+    canUndo.value = data.canUndo || false
+  }
+  if ('canRedo' in data) {
+    canRedo.value = data.canRedo || false
+  }
+}
+
+// 重新绘制画布（全量）
+const redrawCanvas = (data: DrawingData) => {
+  if (!ctx.value || !canvas.value) return
+  ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
+  ctx.value.lineCap = 'round'
+  ctx.value.lineJoin = 'round'
+  
+  data.lines.forEach((line: DrawingLine) => {
+    if (line.points && line.points.length > 0 && ctx.value) {
+      ctx.value.strokeStyle = line.color || '#000000'
+      ctx.value.lineWidth = line.lineWidth || 3
+      ctx.value.beginPath()
+      ctx.value.moveTo(line.points[0].x, line.points[0].y)
+      for (let i = 1; i < line.points.length; i++) {
+        ctx.value.lineTo(line.points[i].x, line.points[i].y)
+      }
+      ctx.value.stroke()
+    }
+  })
+}
+
+// 发送聊天消息
+const sendMessage = () => {
+  if (!socket.value) return
+  
+  const sanitizedMessage = sanitizeInput(chatMessage.value)
+  const messageValidation = validateChatMessage(sanitizedMessage)
+  
+  if (!messageValidation.valid) {
+    ElMessage.error(messageValidation.message || '消息验证失败')
+    return
+  }
+
+  if (!sanitizedMessage.trim()) {
+    ElMessage.error('消息不能为空')
+    return
+  }
+
+  socket.value?.emit('chatMessage', {
+    roomId: roomId.value,
+    message: sanitizedMessage,
+    username: username.value
+  })
+  chatMessage.value = ''
+}
 
 // 加入房间
 const joinRoom = () => {
@@ -542,202 +784,6 @@ const toggleReady = () => {
   }
 }
 
-// 画布初始化
-onMounted(() => {
-  if (!canvas.value) return
-  ctx.value = canvas.value.getContext('2d')
-  if (!ctx.value) return
-  ctx.value.lineWidth = brushSize.value
-  ctx.value.lineCap = 'round'
-  ctx.value.lineJoin = 'round'
-})
-
-// 获取当前实际使用的颜色（考虑橡皮擦模式）
-const getCurrentColor = () => {
-  if (eraserMode.value) return '#FFFFFF'
-  return selectedColor.value
-}
-
-// 开始绘制
-const startDrawing = (e: MouseEvent) => {
-  if (!isDrawer.value || !isConnected.value || !canvas.value) return
-  
-  const rect = canvas.value.getBoundingClientRect()
-  const scaleX = canvas.value.width / rect.width
-  const scaleY = canvas.value.height / rect.height
-  const x = (e.clientX - rect.left) * scaleX
-  const y = (e.clientY - rect.top) * scaleY
-  
-  isDrawing.value = true
-  lastX.value = x
-  lastY.value = y
-  strokeInProgress.value = true // 标记当前笔画开始
-  
-  if (socket.value) {
-    socket.value.emit('draw', {
-      roomId: roomId.value,
-      x,
-      y,
-      type: 'start',
-      color: getCurrentColor(),
-      lineWidth: brushSize.value
-    })
-  }
-}
-
-// 绘制
-const draw = (e: MouseEvent) => {
-  if (!isDrawing.value || !isDrawer.value || !canvas.value || !ctx.value) return
-  
-  const rect = canvas.value.getBoundingClientRect()
-  const scaleX = canvas.value.width / rect.width
-  const scaleY = canvas.value.height / rect.height
-  const x = (e.clientX - rect.left) * scaleX
-  const y = (e.clientY - rect.top) * scaleY
-  
-  if (lastX.value === null || lastY.value === null) {
-    lastX.value = x
-    lastY.value = y
-    return
-  }
-  
-  ctx.value.strokeStyle = getCurrentColor()
-  ctx.value.lineWidth = brushSize.value
-  ctx.value.beginPath()
-  ctx.value.moveTo(lastX.value, lastY.value)
-  ctx.value.lineTo(x, y)
-  ctx.value.stroke()
-  
-  if (socket.value) {
-    socket.value.emit('draw', {
-      roomId: roomId.value,
-      x,
-      y,
-      type: 'move',
-      color: getCurrentColor(),
-      lineWidth: brushSize.value
-    })
-  }
-  
-  lastX.value = x
-  lastY.value = y
-}
-
-// 停止绘制，通知服务器保存历史状态
-const stopDrawing = () => {
-  if (isDrawing.value && isDrawer.value && strokeInProgress.value) {
-    // 只有真正有绘制动作时才发送结束信号
-    socket.value?.emit('drawEnd', { roomId: roomId.value })
-    strokeInProgress.value = false
-  }
-  isDrawing.value = false
-  lastX.value = null
-  lastY.value = null
-}
-
-// 清空画布
-const clearCanvas = (emitEvent = true) => {
-  if (!ctx.value || !canvas.value) return
-  ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
-  if (emitEvent && socket.value && isDrawer.value) {
-    socket.value?.emit('drawClear', { roomId: roomId.value })
-  }
-}
-
-// 选择颜色，退出橡皮擦模式
-const selectColor = (color: string) => {
-  eraserMode.value = false
-  selectedColor.value = color
-}
-
-// 切换橡皮擦模式
-const toggleEraser = () => {
-  if (!isDrawer.value) return
-  if (eraserMode.value) {
-    // 退出擦除，恢复原色
-    eraserMode.value = false
-    selectedColor.value = originalColor
-  } else {
-    // 进入擦除，保存当前颜色
-    originalColor = selectedColor.value
-    eraserMode.value = true
-  }
-}
-
-// 粗细变化
-const handleBrushSizeChange = (value: number) => {
-  if (ctx.value) ctx.value.lineWidth = value
-}
-
-// 撤销
-const undo = () => {
-  if (!isDrawer.value || !socket.value) return
-  socket.value?.emit('undo', { roomId: roomId.value })
-}
-
-// 重做
-const redo = () => {
-  if (!isDrawer.value || !socket.value) return
-  socket.value?.emit('redo', { roomId: roomId.value })
-}
-
-// 更新撤销/重做按钮状态（根据后端返回的可用性）
-const updateUndoRedoStatus = (data: any) => {
-  // 从不同类型的数据中提取撤销/重做状态
-  if ('canUndo' in data) {
-    canUndo.value = data.canUndo || false
-  }
-  if ('canRedo' in data) {
-    canRedo.value = data.canRedo || false
-  }
-}
-
-// 重新绘制画布（全量）
-const redrawCanvas = (data: DrawingData) => {
-  if (!ctx.value || !canvas.value) return
-  ctx.value.clearRect(0, 0, canvas.value.width, canvas.value.height)
-  ctx.value.lineCap = 'round'
-  ctx.value.lineJoin = 'round'
-  
-  data.lines.forEach((line: DrawingLine) => {
-    if (line.points && line.points.length > 0 && ctx.value) {
-      ctx.value.strokeStyle = line.color || '#000000'
-      ctx.value.lineWidth = line.lineWidth || 3
-      ctx.value.beginPath()
-      ctx.value.moveTo(line.points[0].x, line.points[0].y)
-      for (let i = 1; i < line.points.length; i++) {
-        ctx.value.lineTo(line.points[i].x, line.points[i].y)
-      }
-      ctx.value.stroke()
-    }
-  })
-}
-
-// 发送聊天消息
-const sendMessage = () => {
-  if (!socket.value) return
-  
-  const sanitizedMessage = sanitizeInput(chatMessage.value)
-  const messageValidation = validateChatMessage(sanitizedMessage)
-  
-  if (!messageValidation.valid) {
-    ElMessage.error(messageValidation.message || '消息验证失败')
-    return
-  }
-
-  if (!sanitizedMessage.trim()) {
-    ElMessage.error('消息不能为空')
-    return
-  }
-
-  socket.value?.emit('chatMessage', {
-    roomId: roomId.value,
-    message: sanitizedMessage,
-    username: username.value
-  })
-  chatMessage.value = ''
-}
-
 // 房主锁定/解锁房间
 const toggleRoomLock = () => {
   if (!isRoomOwner.value || !socket.value) return
@@ -775,6 +821,16 @@ const scrollChatToBottom = () => {
 // 监听聊天历史变化
 watch(chatHistory, scrollChatToBottom, { deep: true })
 
+// 画布初始化
+onMounted(() => {
+  if (!canvas.value) return
+  ctx.value = canvas.value.getContext('2d')
+  if (!ctx.value) return
+  ctx.value.lineWidth = brushSize.value
+  ctx.value.lineCap = 'round'
+  ctx.value.lineJoin = 'round'
+})
+
 // 最后位置记录及笔画标记
 const lastX = ref<number | null>(null)
 const lastY = ref<number | null>(null)
@@ -789,6 +845,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* 原有样式保持不变，添加移动端适配 */
 .room-badge {
   display: flex;
   align-items: center;
@@ -809,6 +866,7 @@ onUnmounted(() => {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .brush-control {
@@ -832,6 +890,7 @@ onUnmounted(() => {
 .color-picker {
   display: flex;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .color-picker div {
@@ -852,7 +911,7 @@ onUnmounted(() => {
   transform: scale(1.2);
 }
 
-/* 其余原有样式保持不变... */
+/* 基础样式 */
 .game-container {
   max-width: 80vw;
   margin: 0 auto;
@@ -885,6 +944,7 @@ onUnmounted(() => {
   color: white;
   font-size: 1.1rem;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .game-stats {
@@ -947,7 +1007,10 @@ onUnmounted(() => {
 canvas {
   flex: 1;
   cursor: crosshair;
-background: #ffffff;
+  background: #ffffff;
+  width: 100%;
+  height: auto;
+  touch-action: none; /* 提升触摸绘图性能 */
 }
 
 .game-info-card {
@@ -1128,17 +1191,197 @@ background: #ffffff;
   background: #555;
 }
 
-@media (max-width: 1200px) {
+/* ========== 移动端适配样式 ========== */
+@media (max-width: 768px) {
+  .game-container {
+    max-width: 100vw;
+    padding: 0 10px;
+    height: 100vh;
+  }
+
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 15px;
+    padding: 15px;
+  }
+
+  .header h1 {
+    font-size: 1.5rem;
+  }
+
+  .room-info {
+    width: 100%;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .room-badge {
+    flex-wrap: wrap;
+  }
+
+  .lock-btn {
+    margin-left: 0;
+  }
+
+  .game-stats {
+    margin-left: 0;
+    gap: 10px;
+  }
+
   .game-content {
     flex-direction: column;
+    height: auto;
+    gap: 15px;
   }
-  
-  .left-panel, .right-panel {
+
+  .left-panel,
+  .right-panel {
     width: 100%;
   }
-  
+
+  .canvas-container {
+    min-height: 400px;
+  }
+
   canvas {
-    height: 500px;
+    min-height: 300px;
+  }
+
+  .canvas-controls {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .tool-buttons {
+    justify-content: center;
+  }
+
+  .brush-control {
+    justify-content: space-between;
+  }
+
+  .color-picker {
+    justify-content: center;
+  }
+
+  .color-picker div {
+    width: 36px;
+    height: 36px;
+  }
+
+  .right-panel {
+    min-width: auto;
+  }
+
+  .game-info-card,
+  .chat-card {
+    max-height: 400px;
+  }
+
+  .players-table {
+    overflow-x: auto;
+    display: block;
+  }
+
+  .chat-messages {
+    max-height: 200px;
+  }
+
+  .chat-input {
+    flex-wrap: wrap;
+  }
+
+  .chat-input .el-input {
+    flex: 1;
+  }
+
+  .chat-input .el-button {
+    flex-shrink: 0;
+  }
+
+  .join-dialog {
+    width: 90% !important;
+  }
+}
+
+/* 小屏幕手机适配 */
+@media (max-width: 480px) {
+  .header {
+    padding: 12px;
+  }
+
+  .room-info {
+    font-size: 0.9rem;
+  }
+
+  .canvas-container {
+    min-height: 300px;
+  }
+
+  canvas {
+    min-height: 250px;
+  }
+
+  .tool-buttons .el-button {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  .brush-control {
+    padding: 4px 8px;
+  }
+
+  .brush-label {
+    font-size: 0.75rem;
+  }
+
+  .color-picker div {
+    width: 32px;
+    height: 32px;
+  }
+
+  .game-info-card,
+  .chat-card {
+    max-height: 350px;
+  }
+
+  .role-info h3 {
+    font-size: 1rem;
+  }
+
+  .word {
+    font-size: 0.9rem;
+    padding: 4px 10px;
+  }
+
+  .players-list h3 {
+    font-size: 1rem;
+  }
+}
+
+/* 横屏模式适配 */
+@media (max-width: 1024px) and (orientation: landscape) {
+  .game-content {
+    flex-direction: row;
+  }
+
+  .left-panel {
+    flex: 2;
+  }
+
+  .right-panel {
+    flex: 1;
+    min-width: 280px;
+  }
+
+  .canvas-container {
+    min-height: 60vh;
+  }
+
+  canvas {
+    min-height: 50vh;
   }
 }
 </style>
