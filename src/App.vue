@@ -283,6 +283,10 @@ let originalColor = '#000000'     // 保存退出擦除前的颜色
 const canUndo = ref(false)        // 是否可撤销
 const canRedo = ref(false)        // 是否可重做
 
+// 添加节流相关变量
+let pendingPoints: Array<{ x: number; y: number }> = []
+let rafId: number | null = null
+
 // 当前画图数据
 const drawingData = ref<DrawingData>({
   lines: [],
@@ -325,6 +329,24 @@ const getCanvasCoords = (clientX: number, clientY: number) => {
   }
 }
 
+// 发送批量点的函数
+const flushPoints = () => {
+  if (pendingPoints.length === 0) return
+  if (socket.value && isDrawer.value) {
+    socket.value.emit('drawBatch', {
+      roomId: roomId.value,
+      points: pendingPoints,
+      color: getCurrentColor(),
+      lineWidth: brushSize.value
+    })
+    pendingPoints = []
+  }
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
 // 核心绘图方法：开始绘画
 const beginDrawing = (x: number, y: number) => {
   if (!isDrawer.value || !isConnected.value) return
@@ -333,39 +355,29 @@ const beginDrawing = (x: number, y: number) => {
   lastY.value = y
   strokeInProgress.value = true
   
-  if (socket.value) {
-    socket.value.emit('draw', {
-      roomId: roomId.value,
-      x,
-      y,
-      type: 'start',
-      color: getCurrentColor(),
-      lineWidth: brushSize.value
-    })
-  }
 }
 
-// 核心绘图方法：绘画中
+// 修改 drawing 函数，累积点
 const drawing = (x: number, y: number) => {
-  if (!isDrawer.value || !isConnected.value || lastX.value === null || lastY.value === null) return
+  if (!isDrawer.value || !isConnected.value) return
   
-  if (!ctx.value) return
+  // 实时绘制到本地画布
+  if (ctx.value && lastX.value !== null && lastY.value !== null) {
+    ctx.value.strokeStyle = getCurrentColor()
+    ctx.value.lineWidth = brushSize.value
+    ctx.value.beginPath()
+    ctx.value.moveTo(lastX.value, lastY.value)
+    ctx.value.lineTo(x, y)
+    ctx.value.stroke()
+  }
   
-  ctx.value.strokeStyle = getCurrentColor()
-  ctx.value.lineWidth = brushSize.value
-  ctx.value.beginPath()
-  ctx.value.moveTo(lastX.value, lastY.value)
-  ctx.value.lineTo(x, y)
-  ctx.value.stroke()
+  // 累积点
+  pendingPoints.push({ x, y })
   
-  if (socket.value) {
-    socket.value.emit('draw', {
-      roomId: roomId.value,
-      x,
-      y,
-      type: 'move',
-      color: getCurrentColor(),
-      lineWidth: brushSize.value
+  // 使用 requestAnimationFrame 节流发送
+  if (!rafId) {
+    rafId = requestAnimationFrame(() => {
+      flushPoints()
     })
   }
   
@@ -375,13 +387,17 @@ const drawing = (x: number, y: number) => {
 
 // 核心绘图方法：结束绘画
 const endDrawing = () => {
-  if (isDrawing.value && isDrawer.value && strokeInProgress.value) {
+  if (isDrawing.value && isDrawer.value) {
+    flushPoints() // 发送剩余点
     socket.value?.emit('drawEnd', { roomId: roomId.value })
-    strokeInProgress.value = false
   }
   isDrawing.value = false
   lastX.value = null
   lastY.value = null
+  if (rafId) {
+    cancelAnimationFrame(rafId)
+    rafId = null
+  }
 }
 
 // 鼠标事件
@@ -752,6 +768,21 @@ const joinRoom = () => {
     isConnected.value = false
     roomId.value = ''
     showJoinDialog.value = true
+  })
+
+  socket.value.on('drawBatch', (data: { points: Array<{x: number, y: number}>, color: string, lineWidth: number }) => {
+    if (!ctx.value) return;
+      ctx.value.save();
+      ctx.value.strokeStyle = data.color;
+      ctx.value.lineWidth = data.lineWidth;
+      ctx.value.beginPath();
+      const first = data.points[0];
+      ctx.value.moveTo(first.x, first.y);
+      for (let i = 1; i < data.points.length; i++) {
+        ctx.value.lineTo(data.points[i].x, data.points[i].y);
+      }
+      ctx.value.stroke();
+      ctx.value.restore();
   })
 
   socket.value.on('gameReset', (data: ServerEvents['gameReset']) => {

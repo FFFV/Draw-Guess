@@ -409,6 +409,32 @@ io.on('connection', (socket) => {
     broadcastRoomState(roomId);
   });
 
+  // 新增批量绘图事件
+  socket.on('drawBatch', (data) => {
+    const { roomId, points, color, lineWidth } = data
+    const room = rooms.get(roomId)
+    if (!room) return
+    const drawerPlayer = room.players[room.drawerIndex]
+    if (!drawerPlayer || drawerPlayer.id !== socket.id) return
+
+    // 将点追加到当前线条
+    let currentLine = room.drawingData.lines[room.drawingData.lines.length - 1]
+    if (!currentLine || currentLine.color !== color || currentLine.lineWidth !== lineWidth) {
+      // 颜色或线宽变化时新建线条
+      currentLine = { points: [], color, lineWidth }
+      room.drawingData.lines.push(currentLine)
+    }
+    currentLine.points.push(...points)
+
+    // 只向其他客户端广播增量点
+    socket.to(roomId).emit('drawBatch', {
+      points,
+      color,
+      lineWidth,
+      isStart: false  // 可用来区分是否是新线条开始
+    })
+  })
+
   // 绘图事件
   socket.on('draw', (data) => {
     const { roomId, x, y, type, color, lineWidth } = data;
@@ -432,14 +458,19 @@ io.on('connection', (socket) => {
     broadcastCanvasFull(roomId);
   });
   
+
   socket.on('drawEnd', ({ roomId }) => {
-    const room = rooms.get(roomId);
-    if (!room) return;
-    const drawerPlayer = room.players[room.drawerIndex];
-    if (!drawerPlayer || drawerPlayer.id !== socket.id) return;
-    saveHistoryState(room);
-    broadcastCanvasFull(roomId);
-  });
+    const room = rooms.get(roomId)
+    if (!room) return
+    const drawerPlayer = room.players[room.drawerIndex]
+    if (!drawerPlayer || drawerPlayer.id !== socket.id) return
+
+    // 保存历史状态
+    saveHistoryState(room)
+
+    // 通知其他客户端当前笔画结束（方便前端判断，但不是必须）
+    socket.to(roomId).emit('drawEnd')
+  })
   
   socket.on('drawClear', ({ roomId }) => {
     const room = rooms.get(roomId);
