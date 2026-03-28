@@ -285,7 +285,10 @@ const canRedo = ref(false)        // 是否可重做
 
 // 添加节流相关变量
 let pendingPoints: Array<{ x: number; y: number }> = []
-let rafId: number | null = null
+let flushTimer: number | null = null;  // 定时器ID
+let lastDrawPoint: { x: number; y: number } | null = null;
+let lastDrawColor: string | null = null;
+let lastDrawWidth: number | null = null;
 
 // 当前画图数据
 const drawingData = ref<DrawingData>({
@@ -329,23 +332,16 @@ const getCanvasCoords = (clientX: number, clientY: number) => {
   }
 }
 
-// 发送批量点的函数
+// 发送累积的点
 const flushPoints = () => {
-  if (pendingPoints.length === 0) return
+  if (pendingPoints.length === 0) return;
   if (socket.value && isDrawer.value) {
-    socket.value.emit('drawBatch', {
-      roomId: roomId.value,
-      points: pendingPoints,
-      color: getCurrentColor(),
-      lineWidth: brushSize.value
-    })
-    pendingPoints = []
+    // 分批发送（如果点太多，可保留分批逻辑，这里简化）
+    sendBatch(pendingPoints);
+    pendingPoints = [];
   }
-  if (rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
-}
+  flushTimer = null;
+};
 
 // 核心绘图方法：开始绘画
 const beginDrawing = (x: number, y: number) => {
@@ -370,16 +366,9 @@ const drawing = (x: number, y: number) => {
     ctx.value.lineTo(x, y)
     ctx.value.stroke()
   }
-  
-  // 累积点
-  pendingPoints.push({ x, y })
-  
-  // 使用 requestAnimationFrame 节流发送
-  if (!rafId) {
-    rafId = requestAnimationFrame(() => {
-      flushPoints()
-    })
-  }
+
+  pendingPoints.push({ x, y });
+  scheduleFlush(); 
   
   lastX.value = x
   lastY.value = y
@@ -388,17 +377,17 @@ const drawing = (x: number, y: number) => {
 // 核心绘图方法：结束绘画
 const endDrawing = () => {
   if (isDrawing.value && isDrawer.value) {
-    flushPoints() // 发送剩余点
-    socket.value?.emit('drawEnd', { roomId: roomId.value })
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    flushPoints(); // 发送剩余点
+    socket.value?.emit('drawEnd', { roomId: roomId.value });
   }
-  isDrawing.value = false
-  lastX.value = null
-  lastY.value = null
-  if (rafId) {
-    cancelAnimationFrame(rafId)
-    rafId = null
-  }
-}
+  isDrawing.value = false;
+  lastX.value = null;
+  lastY.value = null;
+};
 
 // 鼠标事件
 const startDrawing = (e: MouseEvent) => {
@@ -534,6 +523,26 @@ const redrawCanvas = (data: DrawingData) => {
     }
   })
 }
+
+// 辅助发送函数（复用之前的分批逻辑）
+const sendBatch = (points: Array<{ x: number; y: number }>) => {
+  if (!socket.value || !isDrawer.value) return;
+  socket.value.emit('drawBatch', {
+    roomId: roomId.value,
+    points: points,
+    color: getCurrentColor(),
+    lineWidth: brushSize.value
+  });
+};
+
+// 调度发送（在 drawing 中调用）
+const scheduleFlush = () => {
+  if (flushTimer) return;
+  // 设置延迟 16ms（约60fps），后台会被节流到至少1s，但不会完全停止
+  flushTimer = setTimeout(() => {
+    flushPoints();
+  }, 16);
+};
 
 // 发送聊天消息
 const sendMessage = () => {
@@ -772,17 +781,48 @@ const joinRoom = () => {
 
   socket.value.on('drawBatch', (data: { points: Array<{x: number, y: number}>, color: string, lineWidth: number }) => {
     if (!ctx.value) return;
-      ctx.value.save();
-      ctx.value.strokeStyle = data.color;
-      ctx.value.lineWidth = data.lineWidth;
-      ctx.value.beginPath();
-      const first = data.points[0];
-      ctx.value.moveTo(first.x, first.y);
-      for (let i = 1; i < data.points.length; i++) {
-        ctx.value.lineTo(data.points[i].x, data.points[i].y);
+    
+    const points = data.points;
+    if (!points || points.length === 0) return;
+    
+    ctx.value.save();
+    ctx.value.strokeStyle = data.color;
+    ctx.value.lineWidth = data.lineWidth;
+    ctx.value.lineCap = 'round';
+    ctx.value.lineJoin = 'round';
+    
+    ctx.value.beginPath();
+    
+    // 判断是否与上一笔连续：颜色、线宽相同，且第一个点与上一个点距离小于阈值
+    const isContinuous = lastDrawPoint !== null && 
+                          lastDrawColor === data.color && 
+                          lastDrawWidth === data.lineWidth && 
+                          Math.hypot(points[0].x - lastDrawPoint.x, points[0].y - lastDrawPoint.y) < 50; // 阈值50px
+    
+    if (isContinuous) {
+      // 从上一个点连线到第一个点
+      ctx.value.moveTo((lastDrawPoint as any).x , (lastDrawPoint as any).y);
+      ctx.value.lineTo(points[0].x, points[0].y);
+      // 再依次连线到后续点
+      for (let i = 1; i < points.length; i++) {
+        ctx.value.lineTo(points[i].x, points[i].y);
       }
-      ctx.value.stroke();
-      ctx.value.restore();
+    } else {
+      // 正常绘制，第一个点为 moveTo
+      ctx.value.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        ctx.value.lineTo(points[i].x, points[i].y);
+      }
+    }
+    
+    ctx.value.stroke();
+    
+    // 更新最后绘制点
+    lastDrawPoint = points[points.length - 1];
+    lastDrawColor = data.color;
+    lastDrawWidth = data.lineWidth;
+    
+    ctx.value.restore();
   })
 
   socket.value.on('gameReset', (data: ServerEvents['gameReset']) => {
