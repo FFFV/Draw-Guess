@@ -163,7 +163,12 @@ function handlePlayerLeave(room, playerId, isKick = false) {
     rooms.delete(room.id);
     return player;
   }
-  
+
+  // 新增：只剩一人且游戏进行中，结束游戏
+  if (room.players.length === 1 && room.state !== GAME_STATE.WAITING) {
+      endGame(room.id);
+      return player;
+  }
   // 等待阶段直接更新列表
   if (room.state === GAME_STATE.WAITING) {
     broadcastRoomState(room.id);
@@ -302,7 +307,19 @@ io.on('connection', (socket) => {
       socket.emit('joinError', { message: error });
       return;
     }
-    
+
+    // 用户名重复检查
+    if (room.players.some(p => p.username === sanitizedUsername)) {
+        socket.emit('joinError', { message: '该用户名已在房间内，请更换用户名' });
+        return;
+    }
+
+    // 游戏进行中禁止加入
+    if (room.state !== GAME_STATE.WAITING) {
+        socket.emit('joinError', { message: '游戏已经开始，无法加入房间' });
+        return;
+    }
+
     // 检查房间是否锁定
     if (room.isLocked && room.players.length > 0) {
       socket.emit('joinError', { message: '房间已锁定，无法加入' });
@@ -416,7 +433,7 @@ io.on('connection', (socket) => {
     if (!room) return
     const drawerPlayer = room.players[room.drawerIndex]
     if (!drawerPlayer || drawerPlayer.id !== socket.id) return
-
+    
     // 将点追加到当前线条
     let currentLine = room.drawingData.lines[room.drawingData.lines.length - 1]
     if (!currentLine || currentLine.color !== color || currentLine.lineWidth !== lineWidth) {
@@ -455,7 +472,6 @@ io.on('connection', (socket) => {
         currentLine.points.push({ x, y });
       }
     }
-    broadcastCanvasFull(roomId);
   });
   
 
