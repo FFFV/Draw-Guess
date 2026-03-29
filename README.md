@@ -1,176 +1,229 @@
-# 多人你画我猜游戏
+# 🎨 你画我猜 - 在线多人游戏
 
-一个基于 Vue3 + Vite + Socket.io 的多人实时联机你画我猜网页游戏。
+一个基于 WebSocket 的实时多人“你画我猜”游戏，支持多房间、实时绘画、聊天猜词、计分系统等功能。玩家可以创建或加入房间，轮流担任画师，其他玩家根据画作猜词，猜对得分。
 
-## 功能特性
+---
 
-✅ **多人实时联机** - 同一局域网下多人打开网页即可同步画画、聊天  
-✅ **角色系统** - 自动/手动切换 画画者、猜词者  
-✅ **绘图功能** - Canvas鼠标画画，画笔粗细固定，支持清空画布  
-✅ **实时同步** - 画画轨迹、清空画布、聊天消息全员实时同步  
-✅ **猜词系统** - 内置随机词库（苹果、小猫、太阳、汽车等），画画者可见题目  
-✅ **聊天交互** - 输入框发消息，猜对单词自动提示猜对了  
-✅ **得分系统** - 猜对者得10分，画图者得5分  
-✅ **响应式设计** - 适配电脑端，简洁美观的UI  
+## 📖 目录
 
-## 项目结构
+- [游戏特性](#-游戏特性)
+- [技术栈](#-技术栈)
+- [快速开始](#-快速开始)
+- [使用说明](#-使用说明)
+- [项目结构](#-项目结构)
+- [配置说明](#-配置说明)
+- [API 事件参考](#-api-事件参考)
+- [常见问题](#-常见问题)
 
-```
-draw-and-guess/
-├── package.json              # 前端依赖
-├── vite.config.js            # Vite配置
-├── index.html               # HTML入口
-├── src/
-│   ├── main.js              # Vue应用入口
-│   └── App.vue              # 主组件
-├── server/
-│   ├── package.json         # 后端依赖
-│   └── server.js            # Socket.io服务器
-└── README.md                # 项目说明
-```
+---
 
-## 快速开始
+## 🎮 游戏特性
 
-### 1. 安装依赖
+- **实时绘画**：画师使用画笔/橡皮擦绘画，所有玩家实时同步画作
+- **猜词系统**：猜词玩家在聊天框输入词语，猜对即可获得分数
+- **回合制**：每位玩家轮流担任画师，每轮限时 90 秒
+- **积分排行**：猜对越早得分越高，画师在首个猜对时获得额外加分
+- **房间管理**：房主可锁定房间、踢出玩家，支持房间密码保护
+- **准备机制**：游戏开始前所有玩家需点击“准备”，满足人数后自动开始
+- **绘画辅助**：撤销/重做、清空画布、多色画笔、粗细调节
+- **跨设备**：支持 PC 鼠标和移动端触摸绘画
+- **自动清理**：空闲房间 30 分钟后自动销毁
 
-#### 前端依赖
+---
+
+## 🛠️ 技术栈
+
+### 前端
+- [Vue 3](https://vuejs.org/) (Composition API + TypeScript)
+- [Socket.io-client](https://socket.io/docs/v4/client-api/)
+- [Element Plus](https://element-plus.org/) (UI 组件库)
+- HTML5 Canvas
+
+### 后端
+- [Node.js](https://nodejs.org/) + [Express](https://expressjs.com/)
+- [Socket.io](https://socket.io/)
+- 内存数据存储（无数据库）
+
+---
+
+## 🚀 快速开始
+
+### 环境要求
+- Node.js ≥ 16.0
+- npm 或 yarn
+
+
+### 安装依赖
 ```bash
-npm install
-# 或使用 yarn
-yarn install
+# 后端依赖
+npm install express socket.io
+
+# 前端依赖（如果使用 Vue CLI 或 Vite 单独构建）
+# 项目为单文件结构，需自行配置构建工具
 ```
 
-#### 后端依赖
+### 配置
+
+1. **修改服务器地址**  
+   在 `App.vue` 中找到 Socket.IO 连接地址：
+   ```js
+   socket.value = io('https://your-domain.com')  // 替换为你的后端地址
+   ```
+   若本地测试可改为 `http://localhost:3002`
+
+2. **修改 CORS 配置**（`server.js`）
+   ```js
+   const io = new Server(server, {
+     cors: {
+       origin: "https://your-frontend-domain.com", // 前端域名
+       methods: ["GET", "POST"]
+     }
+   });
+   ```
+
+### 启动后端
 ```bash
-cd server
-npm install
-cd ..
-```
-
-### 2. 启动服务器
-
-#### 启动后端 Socket.io 服务器
-```bash
-cd server
-npm start
-# 服务器将在 http://localhost:3001 启动
-```
-
-#### 启动前端开发服务器（新终端窗口）
-```bash
-npm run dev
-# 前端将在 http://localhost:3000 启动
-```
-
-### 3. 开始游戏
-
-1. 打开浏览器访问：`http://localhost:3000`
-2. 输入用户名和房间号（默认房间号：`room1`）
-3. 邀请朋友们在相同房间号加入游戏
-4. 当至少有2位玩家时，点击"开始游戏"
-5. 画图者开始画画，其他玩家猜词
-
-## 游戏规则
-
-1. **角色分配**：第一个加入房间的玩家成为画图者，其他玩家为猜词者
-2. **画图阶段**：画图者看到随机题目（如"苹果"），在画布上作画
-3. **猜词阶段**：其他玩家通过聊天框输入猜测的词语
-4. **得分**：猜对者得10分，画图者得5分
-5. **轮换**：每轮结束后自动切换画图者
-
-## 技术栈
-
-- **前端**：Vue 3 + Vite + 组合式API `<script setup>`
-- **联机通信**：Socket.io-client（前端） + Express + Socket.io（后端）
-- **绘图**：HTML5 Canvas
-- **样式**：原生CSS + Flexbox + Grid
-- **构建工具**：Vite
-
-## API 接口
-
-### Socket.io 事件
-
-| 事件 | 方向 | 数据 | 描述 |
-|------|------|------|------|
-| `joinRoom` | 客户端→服务端 | `{ roomId, username }` | 加入房间 |
-| `roomInfo` | 服务端→客户端 | 房间信息 | 返回房间状态 |
-| `draw` | 客户端→服务端 | `{ roomId, x, y, type, color }` | 绘制事件 |
-| `drawingUpdate` | 服务端→客户端 | 绘制数据 | 同步绘图数据 |
-| `chatMessage` | 双向 | `{ roomId, message, username }` | 发送/接收聊天消息 |
-| `startGame` | 客户端→服务端 | `roomId` | 开始游戏 |
-| `switchDrawer` | 客户端→服务端 | `roomId` | 切换画图者 |
-| `playerJoined` | 服务端→客户端 | 玩家信息 | 新玩家加入通知 |
-| `playerLeft` | 服务端→客户端 | 玩家信息 | 玩家离开通知 |
-
-## 词库
-
-游戏内置以下词语：
-- 苹果、小猫、太阳、汽车、房子、大树、飞机、电脑
-- 手机、书本、椅子、桌子、香蕉、西瓜、老虎、大象
-- 月亮、星星、雨伞、篮球、足球、帽子、鞋子、衣服
-
-## 开发说明
-
-### 前端开发
-```bash
-npm run dev    # 开发模式
-npm run build  # 生产构建
-npm run preview # 预览生产构建
-```
-
-### 后端开发
-```bash
-cd server
 node server.js
 ```
+默认监听端口 `3002`，可通过环境变量 `PORT` 修改。
 
-### 跨域配置
-后端已配置 CORS，允许 `http://localhost:3000` 访问。
-
-## 常见问题
-
-### Q: 画图不同步
-A: 确保所有玩家都在同一个房间，且网络连接正常。
-
-### Q: 无法加入房间
-A: 确保后端服务器已启动（端口3001），前端已连接。
-
-### Q: 多人同时画图
-A: 只有画图者角色可以画图，其他玩家为猜词者。
-
-### Q: 如何修改词库
-A: 编辑 `server/server.js` 中的 `WORDS` 数组。
-
-## 部署建议
-
-### 前端部署
-1. 构建生产版本：`npm run build`
-2. 部署 `dist` 文件夹到静态服务器（如Nginx、Vercel、Netlify）
-
-### 后端部署
-1. 安装PM2：`npm install -g pm2`
-2. 启动服务：`pm2 start server.js`
-3. 设置反向代理（如Nginx）
-
-### Docker 部署
-```dockerfile
-# Dockerfile 示例
-FROM node:18-alpine
-
-# 前端构建
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-RUN npm run build
-
-# 后端
-WORKDIR /app/server
-COPY server/package*.json ./
-RUN npm install
-COPY server/ .
-
-# 启动
-EXPOSE 3000 3001
-CMD ["sh", "-c", "cd /app && npm run build && cd /app/server && npm start"]
+### 启动前端
+若使用 Vite：
+```bash
+npm run dev
 ```
+或直接将 `App.vue` 集成到现有 Vue 项目中。
+
+---
+
+## 📖 使用说明
+
+### 创建/加入房间
+1. 打开游戏页面，弹出“加入房间”对话框。
+2. 输入用户名、房间号（任意字符串，相同房间号即同一房间）。
+3. 可选：输入房间密码（如果房主设置了密码）。
+4. 点击“加入房间”。
+
+### 准备游戏
+- 房间内至少 2 名玩家后，每位玩家点击“准备”按钮。
+- 当所有玩家都准备后，游戏自动开始。
+
+### 房主功能
+- **锁定房间**：禁止新玩家加入（游戏开始后自动锁定）。
+- **踢出玩家**：在玩家列表中点击“踢出”按钮。
+
+### 绘画（画师）
+- 游戏开始后，当前画师会看到词语。
+- 使用左侧颜色盘选择画笔颜色，调节粗细。
+- 点击“橡皮擦”可擦除（实际为白色画笔）。
+- “撤销”/“重做”可回退绘画步骤。
+- “清空画布”清除所有内容。
+
+### 猜词（猜词者）
+- 在右侧聊天框输入词语（必须与当前词语完全一致，中文匹配）。
+- 猜对后聊天记录会高亮显示，并获得分数（第 1 个猜对得 10 分，第 2 个 8 分，依次递减）。
+- 画师在第 1 个玩家猜对时获得 3 分奖励。
+
+### 回合与结束
+- 每轮限时 90 秒，倒计时结束或所有猜词者猜对后进入下一轮。
+- 每位玩家轮流担任一次画师后游戏结束，按总分排名。
+
+---
+
+## 📁 项目结构
+
+```
+├── server.js               # 后端主文件
+├── middleware/
+│   ├── validation.js       # 输入验证中间件
+│   └── rateLimit.js        # 速率限制中间件
+├── utils/
+│   └── validation.ts       # 前端验证工具
+├── types/
+│   ├── game.ts             # TypeScript 类型定义
+│   └── socket-events.ts    # Socket 事件类型
+└── App.vue                 # 前端主组件
+```
+
+---
+
+## ⚙️ 配置说明
+
+### 游戏规则配置（server.js）
+```js
+const GAME_CONFIG = {
+  MIN_PLAYERS: 2,           // 最少玩家数
+  MAX_PLAYERS: 8,           // 最多玩家数
+  ROUND_TIME: 90,           // 每轮秒数
+  DRAWER_SCORE: 3,          // 画师奖励分
+  GUESSER_SCORES: [10,8,6,4,2], // 猜对得分（按顺序递减）
+  MAX_HISTORY: 30           // 最大撤销步数
+};
+```
+
+### 词语库（server.js）
+```js
+const WORDS = [
+  '苹果', '小猫', '太阳', '汽车', '房子', '大树', '飞机', '电脑', 
+  '手机', '书本', '椅子', '桌子', '香蕉', '西瓜', '老虎', '大象',
+  '月亮', '星星', '雨伞', '篮球', '足球', '帽子', '鞋子', '衣服'
+];
+```
+可自行添加更多词语。
+
+---
+
+## 🔌 API 事件参考
+
+### 客户端 → 服务器
+
+| 事件名 | 数据格式 | 说明 |
+|--------|----------|------|
+| `joinRoom` | `(roomId, username, password)` | 加入房间 |
+| `toggleReady` | `(roomId)` | 切换准备状态 |
+| `lockRoom` | `{ roomId, lock }` | 房主锁定/解锁房间 |
+| `kickPlayer` | `{ roomId, targetPlayerId }` | 房主踢出玩家 |
+| `drawBatch` | `{ roomId, points, color, lineWidth }` | 批量发送绘画点 |
+| `drawEnd` | `{ roomId }` | 结束当前笔画 |
+| `drawClear` | `{ roomId }` | 清空画布 |
+| `undo` | `{ roomId }` | 撤销 |
+| `redo` | `{ roomId }` | 重做 |
+| `chatMessage` | `{ roomId, message, username }` | 发送聊天/猜词 |
+| `startGame` | `(roomId)` | 强制开始游戏（房主） |
+
+### 服务器 → 客户端
+
+| 事件名 | 说明 |
+|--------|------|
+| `roomInfo` | 返回房间完整信息 |
+| `roomStateUpdate` | 玩家列表、房主、锁定状态更新 |
+| `playerJoined` | 新玩家加入 |
+| `playerLeft` | 玩家离开 |
+| `gameStarted` | 游戏开始 |
+| `newRound` | 新回合开始 |
+| `timerUpdate` | 倒计时更新 |
+| `scoreUpdate` | 分数更新 |
+| `roundEnded` | 回合结束 |
+| `gameEnded` | 游戏结束 |
+| `gameReset` | 游戏重置 |
+| `canvasUpdate` | 全量画布更新 |
+| `drawBatch` | 增量绘画点 |
+| `chatMessage` | 新聊天消息 |
+| `joinError` / `gameError` | 错误信息 |
+
+---
+
+## 📝 待优化功能（可自行扩展）
+
+- [ ] 词语难度分级与自定义词库
+- [ ] 猜词提示（拼音、字数提示）
+- [ ] 语音输入猜词
+- [ ] 观战模式
+- [ ] 历史战绩保存（数据库）
+- [ ] 私人房间邀请链接
+
+---
+
+## 📄 开源协议
+
+MIT License © 2026
