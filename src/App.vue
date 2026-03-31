@@ -343,15 +343,36 @@ const flushPoints = () => {
   flushTimer = null;
 };
 
-// 核心绘图方法：开始绘画
 const beginDrawing = (x: number, y: number) => {
-  if (!isDrawer.value || !isConnected.value) return
+  if (!isDrawer.value || !isConnected.value) return;
   
-  lastX.value = x
-  lastY.value = y
-  strokeInProgress.value = true
+  // 清空残留点
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  pendingPoints = [];
   
-}
+  // 发送新笔画开始事件
+  socket.value?.emit('drawStart', {
+    roomId: roomId.value,
+    x, y,
+    color: getCurrentColor(),
+    lineWidth: brushSize.value
+  });
+  
+  // 本地绘制起始点（可选，提升手感）
+  if (ctx.value) {
+    ctx.value.beginPath();
+    ctx.value.arc(x, y, brushSize.value / 2, 0, Math.PI * 2);
+    ctx.value.fillStyle = getCurrentColor();
+    ctx.value.fill();
+  }
+  
+  lastX.value = x;
+  lastY.value = y;
+  strokeInProgress.value = true;
+};
 
 // 修改 drawing 函数，累积点
 const drawing = (x: number, y: number) => {
@@ -376,7 +397,7 @@ const drawing = (x: number, y: number) => {
 
 // 核心绘图方法：结束绘画
 const endDrawing = () => {
-  if (isDrawing.value && isDrawer.value) {
+  if (strokeInProgress.value && isDrawer.value) {
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;
@@ -387,6 +408,7 @@ const endDrawing = () => {
   isDrawing.value = false;
   lastX.value = null;
   lastY.value = null;
+  strokeInProgress.value = false;
 };
 
 // 鼠标事件
@@ -722,6 +744,19 @@ const joinRoom = () => {
     isRoomLocked.value = data.isLocked
     updateUndoRedoStatus(data)
   })
+
+  socket.value.on('drawStart', (data: { x: number; y: number; color: string; lineWidth: number }) => {
+    if (!ctx.value) return;
+    ctx.value.save();
+    ctx.value.strokeStyle = data.color;
+    ctx.value.lineWidth = data.lineWidth;
+    ctx.value.beginPath();
+    ctx.value.moveTo(data.x, data.y);
+    ctx.value.restore();
+    lastDrawPoint = { x: data.x, y: data.y };
+    lastDrawColor = data.color;
+    lastDrawWidth = data.lineWidth;
+  });
 
   socket.value.on('newRound', (data: ServerEvents['newRound']) => {
     players.value = data.players
