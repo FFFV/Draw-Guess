@@ -223,6 +223,34 @@
         <el-button type="primary" @click="joinRoom">加入房间</el-button>
       </template>
     </el-dialog>
+    
+    <el-dialog v-model="showWordSelectDialog" title="选择本回合题目" width="500px" :close-on-click-modal="false" :show-close="false" align-center class="word-select-dialog">
+    <div class="word-select-content">
+      <div class="word-select-timer">
+        剩余时间: <el-tag :type="wordSelectTimeLeft <= 5 ? 'danger' : 'primary'">{{ wordSelectTimeLeft }} 秒</el-tag>
+      </div>
+      <el-form @submit.prevent>
+        <el-form-item label="自定义题目">
+          <el-input 
+            v-model="customWord" 
+            placeholder="请输入题目（1-20个字符）"
+            maxlength="20"
+            show-word-limit
+            @keyup.enter="submitCustomWord"
+          />
+        </el-form-item>
+        <div class="word-select-buttons">
+          <el-button type="primary" size="large" @click="selectRandomWord" style="flex:1">
+            🎲随机题目
+          </el-button>
+          <el-button type="success" size="large" @click="submitCustomWord" :disabled="!customWord.trim()" style="flex:1">
+            提交
+          </el-button>
+        </div>
+      </el-form>
+    </div>
+  </el-dialog>
+  
   </div>
 </template>
 
@@ -289,6 +317,34 @@ let flushTimer: number | null = null;  // 定时器ID
 let lastDrawPoint: { x: number; y: number } | null = null;
 let lastDrawColor: string | null = null;
 let lastDrawWidth: number | null = null;
+
+const showWordSelectDialog = ref(false)
+const customWord = ref('')
+const wordSelectTimeLeft = ref(30)
+let wordSelectTimer: number | null = null
+
+
+// 提交随机题目
+const selectRandomWord = () => {
+  socket.value?.emit('getRandomWord');
+};
+
+// 提交自定义题目
+const submitCustomWord = () => {
+  const trimmed = customWord.value.trim();
+  if (!trimmed) {
+    ElMessage.warning('请输入题目或点击随机题目');
+    return;
+  }
+  if (trimmed.length > 20) {
+    ElMessage.error('题目长度不能超过20个字符');
+    return;
+  }
+  // 清除倒计时定时器并提交
+  if (wordSelectTimer) clearInterval(wordSelectTimer);
+  socket.value?.emit('submitWord', { roomId: roomId.value, word: trimmed });
+  showWordSelectDialog.value = false;
+};
 
 // 当前画图数据
 const drawingData = ref<DrawingData>({
@@ -687,6 +743,42 @@ const joinRoom = () => {
     roomOwnerId.value = data.ownerId
   })
 
+  // 画家收到选题请求
+  socket.value.on('wordSelectionRequired', (data) => {
+    showWordSelectDialog.value = true
+    wordSelectTimeLeft.value = data.timeout
+    customWord.value = ''
+    if (wordSelectTimer) clearInterval(wordSelectTimer)
+    wordSelectTimer = window.setInterval(() => {
+      if (wordSelectTimeLeft.value <= 1) {
+        clearInterval(wordSelectTimer as number)
+        showWordSelectDialog.value = false
+      } else {
+        wordSelectTimeLeft.value--
+      }
+    }, 1000)
+  })
+
+  socket.value.on('roleUpdate', (data) => {
+    const me = data.players.find(p => p.id === socket.value?.id)
+    if (me) role.value = me.role
+  })
+
+  // 监听后端返回的随机词，填入输入框
+  socket.value.on('randomWord', (data) => {
+    customWord.value = data.word;
+  });
+
+  // 非画家等待选题提示
+  socket.value.on('waitingForWord', (data) => {
+    ElMessage.info(data.message)
+  })
+
+  // 提交题目错误
+  socket.value.on('wordSubmitError', (data) => {
+    ElMessage.error(data.message)
+  })
+
   socket.value.on('roomFull', (data: ServerEvents['roomFull']) => {
     ElMessage.error(`房间已满，最多支持${data.maxPlayers}人同时游戏`)
     if (socket.value) {
@@ -742,6 +834,8 @@ const joinRoom = () => {
     guessedPlayers.value = []
     isRoomOwner.value = (socket.value?.id === data.ownerId)
     isRoomLocked.value = data.isLocked
+    if (wordSelectTimer) clearInterval(wordSelectTimer)
+    showWordSelectDialog.value = false
     updateUndoRedoStatus(data)
   })
 
@@ -767,6 +861,8 @@ const joinRoom = () => {
     timeLeft.value = data.timeLeft
     guessedPlayers.value = []
     roomOwnerId.value = data.ownerId
+    if (wordSelectTimer) clearInterval(wordSelectTimer)
+    showWordSelectDialog.value = false
     clearCanvas(false)
     redrawCanvas(data.drawingData)
     updateUndoRedoStatus(data)
@@ -947,6 +1043,8 @@ onUnmounted(() => {
   if (socket.value) {
     socket.value.disconnect()
   }
+  if (socket.value) socket.value.disconnect()
+  if (wordSelectTimer) clearInterval(wordSelectTimer)
 })
 </script>
 
@@ -1163,6 +1261,27 @@ canvas {
 .players-list h3 {
   color: #2c3e50;
   margin-bottom: 10px;
+}
+
+.word-select-dialog .word-select-content {
+  padding: 10px 0;
+}
+
+.word-select-timer {
+  margin-bottom: 20px;
+  font-size: 1rem;
+}
+
+.word-select-buttons {
+  display: flex;
+  gap: 15px;
+  margin-top: 20px;
+}
+
+@media (max-width: 480px) {
+  .word-select-buttons {
+    flex-direction: column;
+  }
 }
 
 .player-item {
