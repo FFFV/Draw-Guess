@@ -892,16 +892,12 @@ const joinRoom = () => {
   socket.value.on('gameEnded', (data: ServerEvents['gameEnded']) => {
     isGameStarted.value = false
     isGameFinished.value = true
-    const winners = data.winners.map(w => w.username).join(', ')
-    const scores = data.finalScores.map(s => `${s.username}: ${s.score}分`).join('\n')
-    const message = `游戏结束！\n\n获胜者: ${winners}\n\n最终得分:\n${scores}`
+    players.value = data.players
     ElMessage({
-      message,
+      message:'游戏结束！',
       type: 'success',
       duration: 0,
-      showClose: true
     })
-    players.value = data.players
   })
 
   socket.value.on('disconnect', () => {
@@ -1353,6 +1349,11 @@ canvas {
 .chat-message.correct {
   background: #d4edda;
   border: 1px solid #c3e6cb;
+}
+
+.chat-message .message {
+  white-space: pre-wrap;  /* 保留换行符 */
+  word-break: break-word;
 }
 
 .username {

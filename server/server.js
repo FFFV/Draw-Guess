@@ -503,6 +503,24 @@ function endGame(roomId) {
     }
   });
 
+  // 生成排名消息
+  const sortedPlayers = [...room.players].sort((a, b) => b.score - a.score);
+  const winnerNames = winners.map(w => w.username).join('、');
+
+  let sysMsgText = `游戏结束！\n获胜者：${winnerNames}\n最终得分：\n`;
+  sortedPlayers.forEach((p, idx) => {
+    sysMsgText += `${idx + 1}. ${p.username}: ${p.score}分\n`;
+  });
+
+  const rankSysMsg = {
+    id: Date.now(),
+    username: '系统',
+    message: sysMsgText.trim(),
+    timestamp: new Date().toLocaleTimeString(),
+    isSystem: true
+  };
+  room.chatHistory.push(rankSysMsg);   // 将排名消息存入房间历史
+
   io.to(roomId).emit('gameEnded', {
     players: room.players,
     winners: winners,
@@ -609,7 +627,7 @@ io.on('connection', (socket) => {
     const word = getRandomWord();
     socket.emit('randomWord', { word });
   });
-  
+
   socket.on('drawStart', (data) => {
     const { roomId, x, y, color, lineWidth } = data;
     const room = rooms.get(roomId);
